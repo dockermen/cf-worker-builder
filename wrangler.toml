@@ -1,0 +1,14 @@
+name = "cf-worker-builder"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# 前端静态资源
+assets = { directory = "./public", binding = "ASSETS" }
+
+# 数据存储（项目、对话历史、LLM 配置、Cloudflare 登录态）
+# 本地开发可直接使用占位 id；部署前请执行:
+#   npx wrangler kv namespace create BUILDER_KV
+# 并把返回的 id 填到下面
+[[kv_namespaces]]
+binding = "BUILDER_KV"
+id = "00000000-0000-0000-0000-000000000000"

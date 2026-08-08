@@ -1,0 +1,62 @@
+/**
+ * KV 数据访问层
+ *
+ * 数据模型：
+ * - settings            => { openaiBaseUrl, openaiKey, openaiModel, cfToken, cfAccountId, cfSubdomain }
+ * - projects            => [{ id, name, workerName, url, deployed, updatedAt }]（项目列表索引）
+ * - project:{id}        => 完整项目（含代码与对话历史）
+ */
+
+export function makeStore(kv) {
+  return {
+    async getSettings() {
+      const raw = await kv.get('settings', 'json');
+      return raw || {};
+    },
+
+    async saveSettings(settings) {
+      await kv.put('settings', JSON.stringify(settings));
+      return settings;
+    },
+
+    async listProjects() {
+      const raw = await kv.get('projects', 'json');
+      return raw || [];
+    },
+
+    async saveProjectList(list) {
+      await kv.put('projects', JSON.stringify(list));
+    },
+
+    async getProject(id) {
+      const raw = await kv.get(`project:${id}`, 'json');
+      return raw || null;
+    },
+
+    /** 保存完整项目，并同步更新项目列表索引（按更新时间倒序） */
+    async saveProject(project) {
+      await kv.put(`project:${project.id}`, JSON.stringify(project));
+
+      const list = await this.listProjects();
+      const meta = {
+        id: project.id,
+        name: project.name,
+        workerName: project.workerName,
+        url: project.url || '',
+        deployed: !!project.deployed,
+        updatedAt: project.updatedAt || Date.now(),
+      };
+      const idx = list.findIndex((p) => p.id === project.id);
+      if (idx >= 0) list[idx] = meta;
+      else list.unshift(meta);
+      list.sort((a, b) => b.updatedAt - a.updatedAt);
+      await this.saveProjectList(list);
+    },
+
+    async deleteProject(id) {
+      await kv.delete(`project:${id}`);
+      const list = await this.listProjects();
+      await this.saveProjectList(list.filter((p) => p.id !== id));
+    },
+  };
+}

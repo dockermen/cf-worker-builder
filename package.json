@@ -1,0 +1,17 @@
+{
+  "name": "cf-worker-builder",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker 在线构建器：配置 OpenAI 兼容大模型，对话式生成 Worker 代码并自动部署到 Cloudflare Workers",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.14.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260801.1": true
+  }
+}

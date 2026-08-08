@@ -1,0 +1,838 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27><text y=%27.9em%27 font-size=%2790%27>⚡</text></svg>" />
+<title>Worker 在线构建器</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --panel2: #181d29;
+    --border: #242c3b;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --accent: #4f8cff;
+    --accent2: #9b6bff;
+    --green: #3ddc97;
+    --red: #ff5d5d;
+    --yellow: #ffc857;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    overflow: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  input, textarea, select { font-family: inherit; }
+
+  /* ---------- 侧边栏 ---------- */
+  .sidebar {
+    width: 264px;
+    min-width: 264px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 14px;
+    gap: 12px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; border-bottom: 1px solid var(--border); }
+  .logo {
+    width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    box-shadow: 0 4px 16px rgba(79,140,255,.35);
+  }
+  .brand h1 { font-size: 15px; font-weight: 700; letter-spacing: .3px; }
+  .brand p { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    transition: all .15s ease;
+  }
+  .btn:hover { border-color: #3a4a5e; background: #1d2432; }
+  .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); border: none; color: #fff; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.12); }
+  .btn.ghost { background: transparent; }
+  .btn.ghost:hover { background: var(--panel2); }
+  .btn.danger-ghost { color: var(--muted); }
+  .btn.danger-ghost:hover { color: var(--red); border-color: rgba(255,93,93,.4); background: rgba(255,93,93,.08); }
+  .btn.block { width: 100%; }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+
+  .list-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; padding: 0 4px; }
+  .project-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
+  .project-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 10px;
+    cursor: pointer;
+    background: transparent;
+    transition: all .15s;
+    position: relative;
+  }
+  .project-item:hover { background: var(--panel2); }
+  .project-item.active { border-color: var(--accent); background: rgba(79,140,255,.08); }
+  .project-item .p-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .project-item .p-worker { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #3d4657; flex-shrink: 0; }
+  .dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(61,220,151,.6); }
+  .project-item .p-del {
+    position: absolute; right: 8px; top: 8px; width: 22px; height: 22px; border-radius: 6px;
+    border: none; background: transparent; color: var(--muted); font-size: 13px; line-height: 1;
+    display: none; align-items: center; justify-content: center;
+  }
+  .project-item:hover .p-del { display: flex; }
+  .project-item .p-del:hover { color: var(--red); background: rgba(255,93,93,.1); }
+
+  .sidebar-footer { display: flex; flex-direction: column; gap: 8px; }
+  .cfg-hint {
+    font-size: 12px; color: var(--yellow); background: rgba(255,200,87,.08);
+    border: 1px solid rgba(255,200,87,.3); border-radius: 8px; padding: 8px 10px; line-height: 1.5;
+  }
+
+  /* ---------- 主区域 ---------- */
+  main { flex: 1; display: flex; min-width: 0; }
+  .empty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 40px; gap: 18px;
+  }
+  .empty .hero-logo {
+    width: 84px; height: 84px; border-radius: 22px; font-size: 42px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    box-shadow: 0 12px 40px rgba(79,140,255,.35);
+  }
+  .empty h2 { font-size: 26px; }
+  .empty p { color: var(--muted); max-width: 560px; line-height: 1.7; font-size: 14px; }
+  .steps { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
+  .step {
+    width: 200px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; text-align: left;
+  }
+  .step .n { width: 24px; height: 24px; border-radius: 50%; background: rgba(79,140,255,.15); color: var(--accent); font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 12px; margin-bottom: 10px; }
+  .step h4 { font-size: 13px; margin-bottom: 6px; }
+  .step p { font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+  .workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .ws-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .ws-header h2 { font-size: 17px; }
+  .status-line { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
+  .badge.ok { color: var(--green); background: rgba(61,220,151,.12); }
+  .badge.off { color: var(--muted); background: rgba(139,147,167,.12); }
+  #projectUrl { font-family: var(--mono); font-size: 12px; color: var(--accent); text-decoration: none; }
+  #projectUrl:hover { text-decoration: underline; }
+  .link-btn { background: none; border: none; color: var(--muted); font-size: 11px; }
+  .link-btn:hover { color: var(--accent); }
+  .ws-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ws-actions .btn.active { border-color: var(--accent); color: var(--accent); }
+
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .view.hidden { display: none; }
+
+  /* ---------- 对话区 ---------- */
+  .messages { flex: 1; overflow-y: auto; padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 780px; line-height: 1.7; font-size: 14px; }
+  .msg.user { align-self: flex-end; background: linear-gradient(135deg, rgba(79,140,255,.22), rgba(155,107,255,.22)); border: 1px solid rgba(79,140,255,.35); border-radius: 14px 14px 4px 14px; padding: 10px 14px; white-space: pre-wrap; word-break: break-word; }
+  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); border-radius: 14px 14px 14px 4px; padding: 12px 16px; word-break: break-word; }
+  .msg.system { align-self: center; font-size: 12px; color: var(--muted); background: rgba(139,147,167,.08); border-radius: 20px; padding: 5px 14px; max-width: 90%; }
+  .msg.system.ok { color: var(--green); }
+  .msg.system.warn { color: var(--yellow); }
+  .msg .codeblock { margin: 10px 0 4px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #0a0d13; }
+  .msg .codehead { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; background: var(--panel2); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+  .msg .copy-btn { background: none; border: 1px solid var(--border); color: var(--muted); font-size: 11px; border-radius: 6px; padding: 2px 8px; }
+  .msg .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .msg pre { padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
+  .msg pre code { font-family: var(--mono); color: #c9d4e8; white-space: pre; }
+  .msg code { font-family: var(--mono); font-size: 12.5px; background: rgba(139,147,167,.15); border-radius: 4px; padding: 1px 5px; }
+  .msg.typing { color: var(--muted); font-size: 13px; }
+
+  /* ---------- 输入区 ---------- */
+  .composer { border-top: 1px solid var(--border); padding: 14px 18px 16px; background: var(--panel); }
+  .composer textarea {
+    width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 10px; padding: 12px 14px; font-size: 14px; resize: none; outline: none; line-height: 1.6;
+    min-height: 62px; max-height: 200px;
+  }
+  .composer textarea:focus { border-color: var(--accent); }
+  .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 10px; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  .check input { accent-color: var(--accent); }
+
+  /* ---------- 代码页 ---------- */
+  .code-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 10px; }
+  .code-editor {
+    flex: 1; width: 100%; background: #0a0d13; color: #c9d4e8; border: none; outline: none;
+    font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 16px 18px; resize: none;
+  }
+
+  /* ---------- 弹窗 ---------- */
+  dialog {
+    width: 520px; max-width: 92vw; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 14px; padding: 0; overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0,0,0,.6);
+  }
+  dialog::backdrop { background: rgba(5,8,14,.7); backdrop-filter: blur(3px); }
+  .dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .dialog-head h3 { font-size: 16px; }
+  .dialog-head .close { background: none; border: none; color: var(--muted); font-size: 15px; }
+  .dialog-head .close:hover { color: var(--text); }
+  .dialog-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; max-height: 62vh; overflow-y: auto; }
+  .dialog-body h4 { font-size: 13px; color: var(--accent); margin: 6px 0 0; letter-spacing: .3px; }
+  .dialog-body h4 + * { margin-top: 2px; }
+  .dialog-body label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  .dialog-body input, .dialog-body textarea {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-size: 13px; outline: none; width: 100%;
+  }
+  .dialog-body input:focus, .dialog-body textarea:focus { border-color: var(--accent); }
+  .dialog-body .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .cf-test-row { display: flex; align-items: center; gap: 12px; }
+  .dialog-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 20px; border-radius: 10px; font-size: 13px; z-index: 99;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); max-width: 80vw;
+  }
+  .toast.error { border-color: rgba(255,93,93,.5); color: #ffb3b3; }
+  .toast.hidden { display: none; }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #2a3344; border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (max-width: 760px) {
+    .sidebar { width: 200px; min-width: 200px; }
+    .ws-header { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= 侧边栏 ================= -->
+<aside class="sidebar">
+  <div class="brand">
+    <div class="logo">⚡</div>
+    <div>
+      <h1>Worker 构建器</h1>
+      <p>对话式 Cloudflare Worker 在线构建</p>
+    </div>
+  </div>
+  <button id="btnNewProject" class="btn primary block">＋ 新建项目</button>
+  <div class="list-title">项目列表</div>
+  <div id="projectList" class="project-list"></div>
+  <div class="sidebar-footer">
+    <div id="cfgHint" class="cfg-hint hidden"></div>
+    <button id="btnSettings" class="btn ghost block">⚙️ 设置（大模型 / Cloudflare）</button>
+  </div>
+</aside>
+
+<!-- ================= 主区域 ================= -->
+<main id="main">
+  <!-- 空状态 -->
+  <section id="emptyState" class="empty">
+    <div class="hero-logo">⚡</div>
+    <h2>Worker 在线构建器</h2>
+    <p>
+      在左侧「设置」中配置 <b>OpenAI 兼容大模型</b>（Base URL / Key / 模型，例如 DeepSeek）
+      与 <b>Cloudflare 凭据</b>，然后新建项目，用对话描述你想要的 Worker，
+      系统会自动生成代码并部署到 Cloudflare Workers，直接给你可访问的地址。
+    </p>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><h4>配置大模型与 Cloudflare</h4><p>一次配置，登录态持久保存，之后无需重复登录。</p></div>
+      <div class="step"><div class="n">2</div><h4>新建项目并对话</h4><p>描述需求，Agent 生成完整 Worker 代码，可多轮迭代修改。</p></div>
+      <div class="step"><div class="n">3</div><h4>自动部署拿地址</h4><p>一键发布到 workers.dev，立即在浏览器访问效果。</p></div>
+    </div>
+  </section>
+
+  <!-- 工作区 -->
+  <section id="workspace" class="workspace hidden">
+    <header class="ws-header">
+      <div>
+        <h2 id="projectName"></h2>
+        <div class="status-line">
+          <span id="statusBadge" class="badge off">未部署</span>
+          <a id="projectUrl" href="#" target="_blank" rel="noopener">尚未部署</a>
+          <button id="btnCopyUrl" class="link-btn hidden">复制</button>
+        </div>
+      </div>
+      <div class="ws-actions">
+        <button id="btnDeploy" class="btn primary">🚀 部署</button>
+        <button id="btnChatView" class="btn ghost active">💬 对话</button>
+        <button id="btnCodeView" class="btn ghost">📄 代码</button>
+        <button id="btnClearChat" class="btn ghost danger-ghost">清空对话</button>
+        <button id="btnDeleteProject" class="btn ghost danger-ghost">删除</button>
+      </div>
+    </header>
+
+    <!-- 对话视图 -->
+    <div id="chatView" class="view">
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <textarea id="input" rows="3"
+          placeholder="描述你想构建的 Worker，例如：做一个天气查询 API，GET /weather?city=北京 返回 JSON；然后跟我说「加一个 /about 页面」来继续修改…"></textarea>
+        <div class="composer-bar">
+          <label class="check"><input type="checkbox" id="autoDeploy" checked /> 自动部署</label>
+          <button id="btnSend" class="btn primary">发送 ↵</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 代码视图 -->
+    <div id="codeView" class="view hidden">
+      <div class="code-toolbar">
+        <span class="muted" style="color:var(--muted);font-size:12px">index.js — ES Module 格式（可直接编辑后保存）</span>
+        <div style="display:flex;gap:8px">
+          <button id="btnSaveCode" class="btn ghost">保存</button>
+          <button id="btnSaveDeploy" class="btn primary">保存并部署</button>
+        </div>
+      </div>
+      <textarea id="codeEditor" class="code-editor" spellcheck="false"></textarea>
+    </div>
+  </section>
+</main>
+
+<!-- ================= 设置弹窗 ================= -->
+<dialog id="settingsDialog" class="dialog">
+  <form method="dialog" class="dialog-head">
+    <h3>⚙️ 构建器设置</h3>
+    <button class="close" value="cancel" aria-label="关闭">✕</button>
+  </form>
+  <div class="dialog-body">
+    <h4>① 大模型接入（OpenAI 兼容，支持 DeepSeek 等）</h4>
+    <label>Base URL
+      <input id="setBaseUrl" list="baseUrlPresets" placeholder="https://api.deepseek.com 或 https://api.openai.com/v1" />
+      <datalist id="baseUrlPresets">
+        <option value="https://api.deepseek.com"></option>
+        <option value="https://api.deepseek.com/v1"></option>
+        <option value="https://api.openai.com/v1"></option>
+        <option value="https://api.moonshot.cn/v1"></option>
+        <option value="https://api.z.ai/api/paas/v4"></option>
+      </datalist>
+    </label>
+    <label>API Key
+      <input id="setKey" type="password" placeholder="sk-..." autocomplete="off" />
+    </label>
+    <label>模型
+      <input id="setModel" list="modelPresets" placeholder="deepseek-chat" />
+      <datalist id="modelPresets">
+        <option value="deepseek-chat"></option>
+        <option value="deepseek-reasoner"></option>
+        <option value="gpt-4o-mini"></option>
+        <option value="gpt-4.1-mini"></option>
+        <option value="moonshot-v1-8k"></option>
+        <option value="glm-4-flash"></option>
+      </datalist>
+    </label>
+
+    <h4>② Cloudflare（自动发布 Worker）</h4>
+    <label>API Token
+      <input id="setCfToken" type="password" placeholder="Cloudflare API Token（需 Workers Scripts 编辑权限）" autocomplete="off" />
+    </label>
+    <label>Account ID
+      <input id="setAccountId" placeholder="Cloudflare 仪表盘右侧的 Account ID" />
+    </label>
+    <div class="cf-test-row">
+      <button id="btnTestCf" type="button" class="btn ghost">测试连接</button>
+      <span id="cfTestResult" class="muted" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <p class="hint">
+      🔒 Token 与 Account ID 保存在构建器自己的 KV 存储中，部署时自动复用（内置登录态），无需每次登录。
+      建议使用仅包含 Workers 脚本读写权限的受限 Token。
+    </p>
+  </div>
+  <div class="dialog-foot">
+    <button id="btnSaveSettings" type="button" class="btn primary">保存设置</button>
+  </div>
+</dialog>
+
+<!-- ================= 新建项目弹窗 ================= -->
+<dialog id="projectDialog" class="dialog">
+  <form method="dialog" class="dialog-head">
+    <h3>＋ 新建项目</h3>
+    <button class="close" value="cancel" aria-label="关闭">✕</button>
+  </form>
+  <div class="dialog-body">
+    <label>项目名称
+      <input id="projName" placeholder="例如：天气 API" />
+    </label>
+    <label>项目描述
+      <textarea id="projDesc" rows="2" placeholder="可选：一句话说明项目用途"></textarea>
+    </label>
+  </div>
+  <div class="dialog-foot">
+    <button id="btnCreateProject" type="button" class="btn primary">创建项目</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+'use strict';
+
+const $ = (sel) => document.querySelector(sel);
+const state = { settings: null, projects: [], project: null, busy: false };
+
+/* ---------------- 基础工具 ---------------- */
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]));
+
+function toast(msg, isError = false) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.className = 'toast' + (isError ? ' error' : '');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.add('hidden'), 3500);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
+  return data;
+}
+
+/* ---------------- 渲染：侧边栏 ---------------- */
+
+function renderSidebar() {
+  const list = $('#projectList');
+  list.innerHTML = '';
+  if (!state.projects.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:var(--muted);font-size:12px;padding:8px 4px;';
+    empty.textContent = '还没有项目，点击上方「新建项目」开始吧';
+    list.appendChild(empty);
+    return;
+  }
+  state.projects.forEach((p) => {
+    const item = document.createElement('div');
+    item.className = 'project-item' + (state.project && p.id === state.project.id ? ' active' : '');
+    item.innerHTML = `
+      <div class="p-name"><span class="dot ${p.deployed ? 'ok' : ''}"></span>${esc(p.name)}</div>
+      <div class="p-worker">${esc(p.workerName)}</div>
+      <button class="p-del" title="删除项目">✕</button>`;
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.p-del')) return;
+      openProject(p.id);
+    });
+    item.querySelector('.p-del').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm(`确定删除项目「${p.name}」？该操作不可恢复。`)) return;
+      try {
+        await api(`/api/projects/${p.id}`, { method: 'DELETE' });
+        if (state.project && state.project.id === p.id) {
+          state.project = null;
+          showEmpty();
+        }
+        await refreshProjects();
+        toast('项目已删除');
+      } catch (err) { toast(err.message, true); }
+    });
+    list.appendChild(item);
+  });
+}
+
+function updateCfgHint() {
+  const hint = $('#cfgHint');
+  const s = state.settings || {};
+  if (!s.hasOpenAIKey || !s.hasCfToken) {
+    hint.classList.remove('hidden');
+    hint.textContent = !s.hasOpenAIKey
+      ? '⚠️ 尚未配置大模型，请先打开「设置」'
+      : '⚠️ 尚未配置 Cloudflare，无法自动部署';
+  } else {
+    hint.classList.add('hidden');
+  }
+}
+
+async function refreshProjects() {
+  const data = await api('/api/state');
+  state.settings = data.settings;
+  state.projects = data.projects;
+  renderSidebar();
+  updateCfgHint();
+}
+
+/* ---------------- 渲染：工作区 ---------------- */
+
+function showEmpty() {
+  $('#workspace').classList.add('hidden');
+  $('#emptyState').classList.remove('hidden');
+  renderSidebar();
+}
+
+async function openProject(id) {
+  try {
+    const data = await api(`/api/projects/${id}`);
+    state.project = data.project;
+    $('#emptyState').classList.add('hidden');
+    $('#workspace').classList.remove('hidden');
+    renderProject(data.project);
+    renderSidebar();
+  } catch (err) { toast(err.message, true); }
+}
+
+function renderProject(p) {
+  $('#projectName').textContent = p.name;
+  const badge = $('#statusBadge');
+  badge.className = 'badge ' + (p.deployed ? 'ok' : 'off');
+  badge.textContent = p.deployed ? '已部署' : '未部署';
+
+  const urlEl = $('#projectUrl');
+  const copyBtn = $('#btnCopyUrl');
+  if (p.url) {
+    urlEl.href = p.url;
+    urlEl.textContent = p.url.replace(/^https?:\/\//, '');
+    copyBtn.classList.remove('hidden');
+  } else {
+    urlEl.href = '#';
+    urlEl.textContent = '尚未部署';
+    copyBtn.classList.add('hidden');
+  }
+
+  $('#codeEditor').value = p.code || '';
+  renderMessages(p.history || []);
+  scrollBottom();
+}
+
+/* ---------------- 消息渲染 ---------------- */
+
+function renderMarkdown(text) {
+  const parts = String(text).split(/```/);
+  let html = '';
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      let code = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
+      html += `<div class="codeblock"><div class="codehead"><span>代码</span>
+        <button type="button" class="copy-btn" data-code="${encodeURIComponent(code)}">复制</button></div>
+        <pre><code>${esc(code)}</code></pre></div>`;
+    } else {
+      let t = esc(parts[i]);
+      t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+      t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      html += t.replace(/\n/g, '<br/>');
+    }
+  }
+  return html;
+}
+
+function renderMessages(history) {
+  const box = $('#messages');
+  box.innerHTML = '';
+  history.forEach((m) => {
+    if (m.role === 'user') {
+      const div = document.createElement('div');
+      div.className = 'msg user';
+      div.textContent = m.content;
+      box.appendChild(div);
+    } else if (m.role === 'assistant') {
+      const div = document.createElement('div');
+      div.className = 'msg assistant';
+      div.innerHTML = renderMarkdown(m.content);
+      box.appendChild(div);
+    } else {
+      const div = document.createElement('div');
+      div.className = 'msg system' + (/✅/.test(m.content) ? ' ok' : (/⚠️/.test(m.content) ? ' warn' : ''));
+      div.textContent = m.content;
+      box.appendChild(div);
+    }
+  });
+}
+
+function scrollBottom() {
+  const box = $('#messages');
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ---------------- 对话 ---------------- */
+
+function setBusy(busy) {
+  $('#btnSend').disabled = busy;
+  $('#input').disabled = busy;
+}
+
+function autoGrow() {
+  const el = $('#input');
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+}
+
+async function sendMessage() {
+  const input = $('#input');
+  const text = input.value.trim();
+  if (!text || state.busy || !state.project) return;
+  input.value = '';
+  autoGrow();
+
+  state.busy = true;
+  setBusy(true);
+
+  const box = $('#messages');
+  const userDiv = document.createElement('div');
+  userDiv.className = 'msg user';
+  userDiv.textContent = text;
+  box.appendChild(userDiv);
+  const typing = document.createElement('div');
+  typing.className = 'msg assistant typing';
+  typing.textContent = '🤖 正在思考并生成代码…';
+  box.appendChild(typing);
+  scrollBottom();
+
+  try {
+    const res = await api(`/api/projects/${state.project.id}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message: text, autoDeploy: $('#autoDeploy').checked }),
+    });
+    state.project = res.project;
+    renderProject(res.project);
+    renderSidebar();
+    if (res.deployed) toast('✅ 已自动部署：' + res.url);
+    else if (res.deployError) toast('⚠️ 部署失败：' + res.deployError, true);
+  } catch (err) {
+    typing.remove();
+    userDiv.remove();
+    input.value = text;
+    autoGrow();
+    toast(err.message, true);
+  } finally {
+    state.busy = false;
+    setBusy(false);
+  }
+}
+
+/* ---------------- 部署 ---------------- */
+
+async function deployCurrent() {
+  if (!state.project) return;
+  const btn = $('#btnDeploy');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '部署中…';
+  try {
+    const res = await api(`/api/projects/${state.project.id}/deploy`, { method: 'POST' });
+    state.project = res.project;
+    renderProject(res.project);
+    renderSidebar();
+    toast('✅ 部署成功：' + res.url);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+/* ---------------- 视图切换 ---------------- */
+
+function switchView(view) {
+  const isChat = view === 'chat';
+  $('#chatView').classList.toggle('hidden', !isChat);
+  $('#codeView').classList.toggle('hidden', isChat);
+  $('#btnChatView').classList.toggle('active', isChat);
+  $('#btnCodeView').classList.toggle('active', !isChat);
+}
+
+/* ---------------- 设置 ---------------- */
+
+function openSettings() {
+  const s = state.settings || {};
+  $('#setBaseUrl').value = s.openaiBaseUrl || '';
+  $('#setKey').value = '';
+  $('#setKey').placeholder = s.hasOpenAIKey ? `已保存：${s.openaiKeyMasked}（留空则保持不变）` : 'sk-...';
+  $('#setModel').value = s.openaiModel || '';
+  $('#setCfToken').value = '';
+  $('#setCfToken').placeholder = s.hasCfToken ? `已保存：${s.cfTokenMasked}（留空则保持不变）` : 'Cloudflare API Token';
+  $('#setAccountId').value = s.cfAccountId || '';
+  $('#cfTestResult').textContent = s.cfSubdomain ? `子域：${s.cfSubdomain}.workers.dev` : '';
+  $('#settingsDialog').showModal();
+}
+
+async function saveSettings() {
+  const body = {
+    openaiBaseUrl: $('#setBaseUrl').value.trim(),
+    openaiKey: $('#setKey').value.trim(),
+    openaiModel: $('#setModel').value.trim(),
+    cfToken: $('#setCfToken').value.trim(),
+    cfAccountId: $('#setAccountId').value.trim(),
+  };
+  if (!body.openaiBaseUrl || !body.openaiKey || !body.openaiModel) {
+    toast('请填写完整的 OpenAI 兼容配置（Base URL / Key / 模型）', true);
+    return;
+  }
+  try {
+    const res = await api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
+    state.settings = res.settings;
+    if (res.cfTestError) toast('设置已保存，但 Cloudflare 测试失败：' + res.cfTestError, true);
+    else toast('✅ 设置已保存');
+    $('#settingsDialog').close();
+    updateCfgHint();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function testCf() {
+  const cfToken = $('#setCfToken').value.trim();
+  const accountId = $('#setAccountId').value.trim();
+  const out = $('#cfTestResult');
+  out.textContent = '测试中…';
+  try {
+    const res = await api('/api/test-cf', { method: 'POST', body: JSON.stringify({ cfToken, cfAccountId: accountId }) });
+    out.textContent = `✅ 连接成功，子域：${res.subdomain}.workers.dev`;
+  } catch (err) {
+    out.textContent = '❌ ' + err.message;
+  }
+}
+
+/* ---------------- 项目创建 ---------------- */
+
+async function createProject() {
+  const name = $('#projName').value.trim();
+  if (!name) { toast('请输入项目名称', true); return; }
+  try {
+    const res = await api('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify({ name, description: $('#projDesc').value.trim() }),
+    });
+    $('#projectDialog').close();
+    $('#projName').value = '';
+    $('#projDesc').value = '';
+    await refreshProjects();
+    await openProject(res.project.id);
+    toast('✅ 项目已创建');
+  } catch (err) { toast(err.message, true); }
+}
+
+/* ---------------- 事件绑定 ---------------- */
+
+$('#btnNewProject').addEventListener('click', () => $('#projectDialog').showModal());
+$('#btnSettings').addEventListener('click', openSettings);
+$('#btnCreateProject').addEventListener('click', createProject);
+$('#btnSaveSettings').addEventListener('click', saveSettings);
+$('#btnTestCf').addEventListener('click', testCf);
+
+$('#btnSend').addEventListener('click', sendMessage);
+$('#input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+$('#input').addEventListener('input', autoGrow);
+
+$('#btnDeploy').addEventListener('click', deployCurrent);
+$('#btnChatView').addEventListener('click', () => switchView('chat'));
+$('#btnCodeView').addEventListener('click', () => switchView('code'));
+
+$('#btnCopyUrl').addEventListener('click', async () => {
+  if (!state.project || !state.project.url) return;
+  try {
+    await navigator.clipboard.writeText(state.project.url);
+    toast('✅ 地址已复制');
+  } catch { toast('复制失败，请手动复制', true); }
+});
+
+$('#btnClearChat').addEventListener('click', async () => {
+  if (!state.project) return;
+  if (!confirm('确定清空当前项目的对话历史？（代码与部署不受影响）')) return;
+  try {
+    const res = await api(`/api/projects/${state.project.id}/clear`, { method: 'POST' });
+    state.project = res.project;
+    renderProject(res.project);
+    toast('对话已清空');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('#btnDeleteProject').addEventListener('click', async () => {
+  if (!state.project) return;
+  if (!confirm(`确定删除项目「${state.project.name}」？该操作不可恢复。`)) return;
+  try {
+    await api(`/api/projects/${state.project.id}`, { method: 'DELETE' });
+    state.project = null;
+    showEmpty();
+    await refreshProjects();
+    toast('项目已删除');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('#btnSaveCode').addEventListener('click', async () => {
+  if (!state.project) return;
+  const code = $('#codeEditor').value;
+  if (!code.trim()) { toast('代码不能为空', true); return; }
+  try {
+    const res = await api(`/api/projects/${state.project.id}/code`, {
+      method: 'PUT',
+      body: JSON.stringify({ code }),
+    });
+    state.project = res.project;
+    toast('✅ 代码已保存');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('#btnSaveDeploy').addEventListener('click', async () => {
+  if (!state.project) return;
+  const code = $('#codeEditor').value;
+  if (!code.trim()) { toast('代码不能为空', true); return; }
+  try {
+    await api(`/api/projects/${state.project.id}/code`, {
+      method: 'PUT',
+      body: JSON.stringify({ code }),
+    });
+    await deployCurrent();
+  } catch (err) { toast(err.message, true); }
+});
+
+// 复制代码块（事件委托）
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.copy-btn');
+  if (!btn) return;
+  const code = decodeURIComponent(btn.dataset.code || '');
+  navigator.clipboard?.writeText(code).then(() => {
+    btn.textContent = '✅ 已复制';
+    setTimeout(() => { btn.textContent = '复制'; }, 1500);
+  });
+});
+
+/* ---------------- 初始化 ---------------- */
+
+(async function init() {
+  try {
+    const data = await api('/api/state');
+    state.settings = data.settings;
+    state.projects = data.projects;
+    renderSidebar();
+    updateCfgHint();
+    if (data.projects.length) {
+      await openProject(data.projects[0].id);
+    } else {
+      showEmpty();
+    }
+  } catch (err) {
+    toast('初始化失败：' + err.message, true);
+  }
+})();
+</script>
+</body>
+</html>
