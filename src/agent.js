@@ -42,9 +42,25 @@ export async function callChatCompletion(settings, messages) {
   return await callChatCompletionsApi(base, settings, messages);
 }
 
+/** 带超时的 fetch（LLM 响应慢时给出明确错误，避免无限挂起） */
+async function fetchWithTimeout(url, options, timeoutMs = 90000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      throw new Error('大模型响应超时（90 秒），请重试或更换模型');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** POST {base}/chat/completions */
 async function callChatCompletionsApi(base, settings, messages) {
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await fetchWithTimeout(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -72,7 +88,7 @@ async function callChatCompletionsApi(base, settings, messages) {
 
 /** POST {base}/responses（OpenAI Responses API） */
 async function callResponsesApi(base, settings, messages) {
-  const res = await fetch(`${base}/responses`, {
+  const res = await fetchWithTimeout(`${base}/responses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -456,10 +456,25 @@ function toast(msg, isError = false) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  // 默认 120s 超时：模型响应慢时避免无限等待，超时给出明确提示
+  const timeout = opts.timeout || 120000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e && e.name === 'AbortError') {
+      throw new Error('请求超时（模型响应较慢），请重试或稍后再试');
+    }
+    throw e;
+  }
+  clearTimeout(timer);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
   return data;
@@ -651,7 +666,7 @@ async function sendMessage() {
   box.appendChild(userDiv);
   const typing = document.createElement('div');
   typing.className = 'msg assistant typing';
-  typing.textContent = '🤖 正在思考并生成代码…';
+  typing.textContent = '🤖 正在思考并生成代码…（模型响应可能需要 1-2 分钟，请耐心等待，最长 2 分钟会自动超时提示）';
   box.appendChild(typing);
   scrollBottom();
 
@@ -838,7 +853,9 @@ async function saveSettings() {
     cfToken: $('#setCfToken').value.trim(),
     cfAccountId: $('#setAccountId').value.trim(),
   };
-  if (!body.openaiBaseUrl || !body.openaiKey || !body.openaiModel) {
+  // Key 允许留空：留空表示沿用已保存的 Key
+  const s = state.settings || {};
+  if (!body.openaiBaseUrl || !body.openaiModel || (!body.openaiKey && !s.hasOpenAIKey)) {
     toast('请填写完整的 OpenAI 兼容配置（Base URL / Key / 模型）', true);
     return;
   }
