@@ -567,6 +567,7 @@ async function streamChatAction(request, store, id) {
       };
       try {
         let lastRoundText = '';
+        const allRoundTexts = []; // 聚合所有轮次文本（代码可能出现在任意一轮）
         // ============ 递归工具循环 ============
         for (let round = 0; ; round++) {
           await store.setChatStatus(id, {
@@ -614,6 +615,7 @@ async function streamChatAction(request, store, id) {
             }
           }
           lastRoundText = roundText;
+          allRoundTexts.push(roundText);
 
           // 保存本论回复
           const cur = await store.getProject(id);
@@ -667,7 +669,8 @@ async function streamChatAction(request, store, id) {
         let deployed = false;
         let url = cur.url || '';
         let deployError = null;
-        const code = extractCode(lastRoundText);
+        const fullReply = allRoundTexts.join('\n'); // 全部轮次合并（代码可能出现在任意一轮）
+        const code = extractCode(fullReply);
         if (code) {
           cur.code = code;
           if (body.autoDeploy !== false) {
@@ -700,7 +703,7 @@ async function streamChatAction(request, store, id) {
         await store.saveProject(cur);
         await store.clearChatStatus(id);
         send('done', {
-          reply: lastRoundText,
+          reply: fullReply,
           code,
           deployed,
           url,
