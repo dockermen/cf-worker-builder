@@ -924,11 +924,25 @@ async function sendMessage() {
     }
   } catch (err) {
     typing.remove();
-    if (assistantEl) assistantEl.remove();
-    input.value = text;
-    autoGrow();
-    if (err && err.name === 'AbortError') toast('请求超时，请重试（已发送的内容会保留在记录中）', true);
-    else toast(err.message, true);
+    // 网络中断/超时：任务可能仍在服务端后台执行，启动自动恢复轮询，不放弃
+    const errMsg = String((err && err.message) || '');
+    const isNet =
+      err && (err.name === 'AbortError' || err.name === 'TypeError' || /Failed to fetch|NetworkError|network|ERR_/i.test(errMsg));
+    if (isNet && state.project) {
+      if (assistantEl) assistantEl.remove();
+      const resumeDiv = document.createElement('div');
+      resumeDiv.className = 'msg system warn';
+      resumeDiv.textContent = '⚠️ 连接中断（可能是网络波动或模型响应较长），任务可能仍在后台执行，已启动自动恢复，完成后自动显示结果…';
+      box.appendChild(resumeDiv);
+      scrollBottom();
+      toast('连接中断，已启动后台自动恢复', true);
+      watchChatStatus(state.project.id);
+    } else {
+      if (assistantEl) assistantEl.remove();
+      input.value = text;
+      autoGrow();
+      toast(errMsg || '请求失败', true);
+    }
   } finally {
     clearTimeout(abortTimer);
     state.busy = false;
@@ -995,15 +1009,25 @@ function hideChatResume() {
   if (bar) bar.className = 'chat-resume hidden';
 }
 
+function renderChatResume(status) {
+  const stageMap = { thinking: '生成中', tool: '执行工具', deploying: '部署中' };
+  const label = stageMap[status.stage] || '进行中';
+  let text = `⏳ 对话正在后台${label}`;
+  if (status.round) text += `（第 ${status.round} 轮）`;
+  if (status.note) text += `：${status.note}`;
+  text += '…结果会自动保存，完成后自动刷新';
+  showChatResume(text);
+}
+
 async function watchChatStatus(id) {
   if (state.chatWatch) { clearInterval(state.chatWatch); state.chatWatch = null; }
   try {
     const r = await api(`/api/projects/${id}/chat-status`);
     if (!r.status) { hideChatResume(); return; }
     const started = r.status.startedAt || Date.now();
-    const stale = Date.now() - started > 60000;
+    const stale = Date.now() - started > 600000; // 10 分钟视为异常残留
     if (r.status.status === 'running' && !stale) {
-      showChatResume('⏳ 该项目的对话仍在生成中，离开页面后结果会自动保存，稍候将自动刷新…');
+      renderChatResume(r.status);
       state.chatWatch = setInterval(async () => {
         try {
           const r2 = await api(`/api/projects/${id}/chat-status`);
@@ -1017,12 +1041,14 @@ async function watchChatStatus(id) {
               state.project = d.project;
               renderProject(d.project);
             }
-            toast('💬 对话已更新');
+            toast('💬 后台对话已完成，记录已刷新');
+          } else {
+            renderChatResume(r2.status); // 实时进度
           }
         } catch (_) { /* ignore */ }
-      }, 3000);
+      }, 2500);
     } else if (r.status.status === 'running') {
-      showChatResume('⚠️ 上次对话可能已中断（超时），可重新发送消息；已发送的内容会保留在记录中');
+      showChatResume('⚠️ 上次对话可能已中断（超时），已发送的内容保留在记录中，可重新发送');
     }
   } catch (_) { /* ignore */ }
 }

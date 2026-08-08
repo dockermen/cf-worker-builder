@@ -442,15 +442,14 @@ async function chatAction(request, store, id) {
   project.history.push({ role: 'user', content: message });
   await store.saveProject(project);
 
-  const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...project.history.slice(-40),
-  ];
+  await store.setChatStatus(id, { status: 'running', startedAt: Date.now(), stage: 'thinking', round: 1, note: '正在思考…', updatedAt: Date.now() });
+  const messages = buildMessages(project);
 
   let reply;
   try {
     reply = await callChatCompletion(settings, messages);
   } catch (e) {
+    await store.clearChatStatus(id);
     // 保留用户消息，并记录失败原因（便于切换页面后看到）
     project.history.push({ role: 'system', content: `⚠️ 对话调用失败：${e.message}` });
     project.updatedAt = Date.now();
@@ -504,6 +503,7 @@ async function chatAction(request, store, id) {
   }
 
   await store.saveProject(project);
+  await store.clearChatStatus(id);
   return json({ project, reply, code, deployed, url, deployError, testResult, smokeTest });
 }
 
@@ -536,10 +536,7 @@ async function streamChatAction(request, store, id) {
   await store.saveProject(project);
   await store.setChatStatus(id, { status: 'running', startedAt: Date.now() });
 
-  let messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...project.history.slice(-40),
-  ];
+  let messages = buildMessages(project);
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -555,6 +552,17 @@ async function streamChatAction(request, store, id) {
         let lastRoundText = '';
         // ============ 递归工具循环 ============
         for (let round = 0; ; round++) {
+          await store.setChatStatus(id, {
+            status: 'running',
+            startedAt: (await store.getChatStatus(id))?.startedAt || Date.now(),
+            stage: 'thinking',
+            round: round + 1,
+            note: `第 ${round + 1} 轮生成中…`,
+            updatedAt: Date.now(),
+          });
+          // 长会话：每轮都用最新项目代码重建上下文
+          const curCtx = await store.getProject(id);
+          messages = buildMessages(curCtx);
           const { response: llmRes, isResponses } = await streamChatCompletion(settings, messages);
           const reader = llmRes.body.getReader();
           let buffer = '';
@@ -606,6 +614,14 @@ async function streamChatAction(request, store, id) {
           let toolIdx = 0;
           for (const spec of tests) {
             toolIdx++;
+            await store.setChatStatus(id, {
+              status: 'running',
+              startedAt: (await store.getChatStatus(id))?.startedAt || Date.now(),
+              stage: 'tool',
+              round: round + 1,
+              note: `正在执行工具：${String(spec).split('\n')[0] || 'HTTP 请求'}`,
+              updatedAt: Date.now(),
+            });
             const r = await executeHttpTest(spec);
             allToolResults.push(r);
             cur.history.push({ role: 'system', content: formatToolResult(r, toolIdx) });
@@ -622,6 +638,14 @@ async function streamChatAction(request, store, id) {
         }
 
         // ============ 循环结束：部署 + 冒烟测试 ============
+        await store.setChatStatus(id, {
+          status: 'running',
+          startedAt: (await store.getChatStatus(id))?.startedAt || Date.now(),
+          stage: 'deploying',
+          round: 0,
+          note: '正在部署与测试…',
+          updatedAt: Date.now(),
+        });
         const cur = await store.getProject(id);
         let deployed = false;
         let url = cur.url || '';
@@ -691,6 +715,21 @@ async function streamChatAction(request, store, id) {
       Connection: 'keep-alive',
     },
   });
+}
+
+/** 组装 LLM 上下文：系统提示词 + 当前项目代码 + 历史（长会话锚定当前代码状态） */
+function buildMessages(project) {
+  return [
+    { role: 'system', content: SYSTEM_PROMPT },
+    {
+      role: 'system',
+      content: `当前项目代码（${project.workerName || ''}，修改请基于此代码，这是最新工作副本）：
+\`\`\`javascript
+${project.code || '(暂无代码)'}
+\`\`\``,
+    },
+    ...(project.history || []).slice(-40),
+  ];
 }
 
 /** 手动部署当前代码 */
