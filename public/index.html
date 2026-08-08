@@ -876,8 +876,16 @@ async function sendMessage() {
           state.project = payload.project;
           renderProject(payload.project);
           renderSidebar();
+          const testBits = [];
+          if (payload.testResult) {
+            testBits.push(payload.testResult.error ? '🔧 ' + payload.testResult.error : '🔧 接口测试 HTTP ' + payload.testResult.status);
+          }
+          if (payload.smokeTest) {
+            testBits.push(payload.smokeTest.error ? '🌐 冒烟测试失败' : '🌐 冒烟测试 HTTP ' + payload.smokeTest.status);
+          }
           if (payload.deployed) toast('✅ 已自动部署：' + payload.url);
           else if (payload.deployError) toast('⚠️ 部署失败：' + payload.deployError, true);
+          else if (testBits.length) toast(testBits.join('  '), payload.testResult && payload.testResult.error);
         } else if (event === 'error') {
           throw new Error(payload.error || '对话出错');
         }

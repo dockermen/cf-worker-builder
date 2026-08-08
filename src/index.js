@@ -21,6 +21,7 @@ import {
   publicOAuth,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
+import { extractHttpTest, executeHttpTest, formatTestResult } from './tools.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode } from './deploy.js';
 
 export default {
@@ -440,8 +441,23 @@ async function chatAction(request, store, id) {
     }
   }
 
+  // Agent 工具：test-http + 自动冒烟测试（非流式路径）
+  let testResult = null;
+  let smokeTest = null;
+  const testSpec = extractHttpTest(reply);
+  if (testSpec) {
+    testResult = await executeHttpTest(testSpec);
+    project.history.push({ role: 'system', content: formatTestResult(testResult, 'HTTP ') });
+  }
+  if (deployed) {
+    try {
+      smokeTest = await executeHttpTest(`GET ${url}`);
+      project.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+    } catch (_) { /* ignore */ }
+  }
+
   await store.saveProject(project);
-  return json({ project, reply, code, deployed, url, deployError });
+  return json({ project, reply, code, deployed, url, deployError, testResult, smokeTest });
 }
 
 /**
@@ -530,7 +546,7 @@ async function streamChatAction(request, store, id) {
           }
         }
 
-        // 流结束：保存回复 → 提取代码 → 自动部署
+        // 流结束：保存回复 → 提取代码 → 自动部署 → 执行测试工具与冒烟测试
         const cur = await store.getProject(id);
         cur.history.push({ role: 'assistant', content: fullText });
         cur.updatedAt = Date.now();
@@ -558,9 +574,30 @@ async function streamChatAction(request, store, id) {
             }
           }
         }
+
+        // Agent 工具：test-http（等效 curl，由模型按需发起）
+        let testResult = null;
+        const testSpec = extractHttpTest(fullText);
+        if (testSpec) {
+          testResult = await executeHttpTest(testSpec);
+          cur.history.push({ role: 'system', content: formatTestResult(testResult, 'HTTP ') });
+        }
+
+        // 自动冒烟测试：部署成功后自动请求一次首页
+        let smokeTest = null;
+        if (deployed) {
+          try {
+            smokeTest = await executeHttpTest(`GET ${url}`);
+            cur.history.push({
+              role: 'system',
+              content: formatTestResult(smokeTest, '冒烟测试：'),
+            });
+          } catch (_) { /* ignore */ }
+        }
+
         await store.saveProject(cur);
         await store.clearChatStatus(id);
-        send('done', { reply: fullText, code, deployed, url, deployError, project: cur });
+        send('done', { reply: fullText, code, deployed, url, deployError, testResult, smokeTest, project: cur });
         controller.close();
       } catch (e) {
         // 中断：保留已生成内容（若有）并记录错误
