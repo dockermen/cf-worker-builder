@@ -389,6 +389,7 @@
       <div class="code-toolbar">
         <span class="muted" style="color:var(--muted);font-size:12px">index.js — ES Module 格式（可直接编辑后保存）</span>
         <div style="display:flex;gap:8px">
+          <button id="btnVersions" class="btn ghost">🕘 版本</button>
           <button id="btnSaveCode" class="btn ghost">保存</button>
           <button id="btnSaveDeploy" class="btn primary">保存并部署</button>
         </div>
@@ -474,6 +475,18 @@
   </div>
   <div class="dialog-foot">
     <button id="btnSaveSettings" type="button" class="btn primary">保存设置</button>
+  </div>
+</dialog>
+
+<!-- ================= 版本历史弹窗 ================= -->
+<dialog id="versionDialog" class="dialog">
+  <div class="dialog-head">
+    <h3>🕘 版本历史</h3>
+    <button id="btnVersionClose" class="close" aria-label="关闭">✕</button>
+  </div>
+  <div class="dialog-body" style="padding:12px 16px">
+    <p class="hint" style="margin-bottom:8px">每次部署会自动存档一个版本（最多保留 20 个），可查看、恢复或重新部署历史版本。</p>
+    <div id="versionList" style="display:flex;flex-direction:column;gap:8px"></div>
   </div>
 </dialog>
 
@@ -881,11 +894,11 @@ async function sendMessage() {
             testBits.push(payload.testResult.error ? '🔧 ' + payload.testResult.error : '🔧 接口测试 HTTP ' + payload.testResult.status);
           }
           if (payload.smokeTest) {
-            testBits.push(payload.smokeTest.error ? '🌐 冒烟测试失败' : '🌐 冒烟测试 HTTP ' + payload.smokeTest.status);
+            testBits.push(payload.smokeTest.error ? '🌐 冒烟测试失败' : '🌐 冒烟测试 HTTP ' + payload.smokeTest.status + (payload.smokeTest.status === 404 ? '（根路径无响应，正常）' : ''));
           }
           if (payload.deployed) toast('✅ 已自动部署：' + payload.url);
           else if (payload.deployError) toast('⚠️ 部署失败：' + payload.deployError, true);
-          else if (testBits.length) toast(testBits.join('  '), payload.testResult && payload.testResult.error);
+          else if (testBits.length) toast(testBits.join('  '), (payload.testResult && payload.testResult.error) || (payload.smokeTest && payload.smokeTest.status >= 500));
         } else if (event === 'error') {
           throw new Error(payload.error || '对话出错');
         }
@@ -1312,6 +1325,76 @@ $('#btnDeleteProject').addEventListener('click', async () => {
     toast('项目已删除');
   } catch (err) { toast(err.message, true); }
 });
+
+/* ---------------- 版本历史 ---------------- */
+
+async function openVersions() {
+  if (!state.project) return;
+  const list = $('#versionList');
+  list.innerHTML = '<div class="muted" style="color:var(--muted);font-size:13px">加载中…</div>';
+  $('#versionDialog').showModal();
+  try {
+    const r = await api(`/api/projects/${state.project.id}/versions`);
+    list.innerHTML = '';
+    if (!r.versions.length) {
+      list.innerHTML = '<div class="muted" style="color:var(--muted);font-size:13px">暂无版本，部署一次后会自动生成</div>';
+      return;
+    }
+    r.versions.forEach((ver) => {
+      const item = document.createElement('div');
+      item.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;';
+      const time = new Date(ver.createdAt).toLocaleString();
+      item.innerHTML = `
+        <div style="font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center">
+          <span>#${ver.v} · ${esc(ver.note || '')}</span>
+          ${ver.deployed ? '<span class="badge ok">已部署</span>' : '<span class="badge off">未部署</span>'}
+        </div>
+        <div style="font-size:11px;color:var(--muted)">${time}${ver.url ? ' · ' + esc(ver.url.replace(/^https?:\/\//, '')) : ''}</div>
+        <div style="display:flex;gap:6px;margin-top:2px">
+          <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="view" data-v="${ver.v}">查看代码</button>
+          <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="restore" data-v="${ver.v}">恢复</button>
+          <button class="btn primary" style="font-size:12px;padding:4px 10px" data-act="redeploy" data-v="${ver.v}">恢复并部署</button>
+        </div>`;
+      item.querySelector('[data-act="view"]').addEventListener('click', () => {
+        // 把版本代码载入编辑器并切换到代码页
+        $('#codeEditor').value = ver.code || '';
+        $('#versionDialog').close();
+        switchView('code');
+        toast(`已载入版本 #${ver.v} 代码（未保存）`);
+      });
+      item.querySelector('[data-act="restore"]').addEventListener('click', async () => {
+        if (!confirm(`确定恢复版本 #${ver.v}？当前代码将被替换。`)) return;
+        try {
+          const res = await api(`/api/projects/${state.project.id}/versions/${ver.v}/restore`, {
+            method: 'POST',
+            body: JSON.stringify({ deploy: false }),
+          });
+          state.project = res.project;
+          renderProject(res.project);
+          renderSidebar();
+          toast(`✅ 已恢复到版本 #${ver.v}（未部署）`);
+        } catch (e) { toast(e.message, true); }
+      });
+      item.querySelector('[data-act="redeploy"]').addEventListener('click', async () => {
+        if (!confirm(`确定恢复版本 #${ver.v} 并重新部署？`)) return;
+        try {
+          const res = await api(`/api/projects/${state.project.id}/versions/${ver.v}/restore`, {
+            method: 'POST',
+            body: JSON.stringify({ deploy: true }),
+          });
+          state.project = res.project;
+          renderProject(res.project);
+          renderSidebar();
+          toast(res.deployed ? '✅ 已恢复并部署：' + res.url : '恢复完成（部署失败）');
+        } catch (e) { toast(e.message, true); }
+      });
+      list.appendChild(item);
+    });
+  } catch (e) { toast(e.message, true); }
+}
+
+$('#btnVersions').addEventListener('click', openVersions);
+$('#btnVersionClose').addEventListener('click', () => $('#versionDialog').close());
 
 $('#btnSaveCode').addEventListener('click', async () => {
   if (!state.project) return;

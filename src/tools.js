@@ -104,5 +104,9 @@ export function formatTestResult(result, label = '测试') {
   if (!result) return '';
   if (result.error) return `🔧 ${label}请求失败：${result.error}`;
   const bodyPreview = (result.body || '').replace(/\n/g, ' ').slice(0, 240);
+  // 冒烟测试 404：多半是 Worker 未处理根路径，属正常，给出友好说明而非报错
+  if (label.startsWith('冒烟测试') && result.status === 404) {
+    return `🌐 冒烟测试结果：HTTP 404（Worker 未处理根路径 /，可能只响应特定路由，属正常现象）`;
+  }
   return `🔧 ${label}结果：${result.status} ${result.statusText || ''}${bodyPreview ? '\n' + bodyPreview : ''}`;
 }

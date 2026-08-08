@@ -8,7 +8,7 @@
  *    Token 持久化在 KV 且自动刷新，无需每次登录
  */
 
-import { json, slugify, extractCode, maskKey, DEFAULT_CODE } from './util.js';
+import { json, slugify, extractCode, maskKey, DEFAULT_CODE, pushVersion } from './util.js';
 import { makeStore } from './store.js';
 import { callChatCompletion, streamChatCompletion, SYSTEM_PROMPT } from './agent.js';
 import {
@@ -244,6 +244,8 @@ async function handleApi(request, url, env, store) {
       deployed: false,
       deployedAt: null,
       history: [],
+      versions: [],
+      nextVersion: 1,
       createdAt: now,
       updatedAt: now,
     };
@@ -313,6 +315,8 @@ async function handleApi(request, url, env, store) {
       history: [
         { role: 'system', content: `🔗 已关联已有 Cloudflare Worker：${workerName}，可在对话中描述需求进行修改，修改后自动部署覆盖该 Worker。` },
       ],
+      versions: [],
+      nextVersion: 1,
       createdAt: now,
       updatedAt: now,
     };
@@ -325,6 +329,49 @@ async function handleApi(request, url, env, store) {
     } catch (_) { /* ignore */ }
     await store.saveProject(project);
     return json({ project });
+  }
+
+  // ============ 项目版本控制 ============
+  const versionsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions$/);
+  if (versionsMatch && method === 'GET') {
+    const project = await store.getProject(versionsMatch[1]);
+    if (!project) return json({ error: '项目不存在' }, 404);
+    const versions = (project.versions || []).slice().reverse(); // 新版在前
+    return json({ versions, nextVersion: project.nextVersion || 1 });
+  }
+
+  const versionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/(\d+)(?:\/restore)?$/);
+  if (versionMatch && (method === 'GET' || method === 'POST')) {
+    const project = await store.getProject(versionMatch[1]);
+    if (!project) return json({ error: '项目不存在' }, 404);
+    const v = Number(versionMatch[2]);
+    const ver = (project.versions || []).find((x) => x.v === v);
+    if (!ver) return json({ error: '版本不存在' }, 404);
+    if (method === 'GET') return json({ version: ver });
+
+    // POST：恢复版本（可选立即部署）
+    const body = await readBody();
+    project.code = ver.code;
+    project.updatedAt = Date.now();
+    project.history.push({ role: 'system', content: `↩️ 已恢复到版本 #${v}（${ver.note || ''}）` });
+    let deployed = false;
+    let url = project.url || '';
+    if (body.deploy) {
+      try {
+        const settings = await store.getSettings();
+        const r = await doDeploy(store, settings, project, `恢复版本 #${v} 并部署`);
+        deployed = true;
+        url = r.url;
+        project.url = r.url;
+        project.deployed = true;
+        project.deployedAt = Date.now();
+        project.history.push({ role: 'system', content: `✅ 版本 #${v} 已重新部署到：${r.url}` });
+      } catch (e) {
+        project.history.push({ role: 'system', content: `⚠️ 恢复后重新部署失败：${e.message}` });
+      }
+    }
+    await store.saveProject(project);
+    return json({ project, deployed, url });
   }
 
   // ============ 对话进行中状态查询 ============
@@ -424,7 +471,7 @@ async function chatAction(request, store, id) {
     project.code = code;
     if (body.autoDeploy !== false) {
       try {
-        const r = await doDeploy(store, settings, project);
+        const r = await doDeploy(store, settings, project, '对话生成并部署');
         deployed = true;
         url = r.url;
         project.url = r.url;
@@ -558,7 +605,7 @@ async function streamChatAction(request, store, id) {
           cur.code = code;
           if (body.autoDeploy !== false) {
             try {
-              const r = await doDeploy(store, settings, cur);
+              const r = await doDeploy(store, settings, cur, '对话生成并部署');
               deployed = true;
               url = r.url;
               cur.url = r.url;
@@ -644,7 +691,7 @@ async function deployAction(store, id) {
   if (!project.code) return json({ error: '项目还没有可部署的代码' }, 400);
 
   try {
-    const r = await doDeploy(store, settings, project);
+    const r = await doDeploy(store, settings, project, '手动部署');
     project.url = r.url;
     project.deployed = true;
     project.deployedAt = Date.now();
@@ -657,8 +704,8 @@ async function deployAction(store, id) {
   }
 }
 
-/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 缓存子域 → 上传脚本 → 返回访问地址 */
-async function doDeploy(store, settings, project) {
+/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
+async function doDeploy(store, settings, project, note) {
   const cred = await getCredentials(store, settings);
   if (!settings.cfSubdomain) {
     const r = await getAccountSubdomain(cred.token, cred.accountId);
@@ -672,5 +719,6 @@ async function doDeploy(store, settings, project) {
     code: project.code,
   });
   const url = `https://${project.workerName}.${settings.cfSubdomain}.workers.dev`;
+  pushVersion(project, note || '部署', url);
   return { url };
 }

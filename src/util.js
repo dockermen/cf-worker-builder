@@ -61,3 +61,26 @@ export const DEFAULT_CODE = `export default {
   },
 };
 `;
+
+
+/**
+ * 项目版本存档：每次部署自动记录一个快照
+ * 最多保留 MAX_VERSIONS 个（超出删除最旧）
+ */
+export const MAX_VERSIONS = 20;
+
+export function pushVersion(project, note, url) {
+  const versions = project.versions || [];
+  const v = project.nextVersion || 1;
+  versions.push({
+    v,
+    code: project.code || '',
+    note: note || `版本 ${v}`,
+    url: url || project.url || '',
+    deployed: !!url,
+    createdAt: Date.now(),
+  });
+  while (versions.length > MAX_VERSIONS) versions.shift();
+  project.versions = versions;
+  project.nextVersion = v + 1;
+}
