@@ -502,7 +502,10 @@ function renderSidebar() {
 function updateCfgHint() {
   const hint = $('#cfgHint');
   const s = state.settings || {};
-  if (!s.hasOpenAIKey || !s.hasCfToken) {
+  const o = state.oauth || { loggedIn: false };
+  // Cloudflare 就绪 = 已在线登录 或 已填手动 Token
+  const cfReady = o.loggedIn || s.hasCfToken;
+  if (!s.hasOpenAIKey || !cfReady) {
     hint.classList.remove('hidden');
     hint.textContent = !s.hasOpenAIKey
       ? '⚠️ 尚未配置大模型，请先打开「设置」'

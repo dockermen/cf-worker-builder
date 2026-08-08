@@ -37,7 +37,8 @@ export async function deployWorker({ cfToken, accountId, scriptName, code }) {
   body += `Content-Type: application/json\r\n\r\n`;
   body += metadata;
   body += `\r\n--${boundary}\r\n`;
-  body += `Content-Disposition: form-data; name="index.js"\r\n`;
+  // 注意：文件 part 必须带 filename，否则 Cloudflare 无法关联模块名（报 10021 No such module）
+  body += `Content-Disposition: form-data; name="index.js"; filename="index.js"\r\n`;
   body += `Content-Type: application/javascript\r\n\r\n`;
   body += code;
   body += `\r\n--${boundary}--\r\n`;
