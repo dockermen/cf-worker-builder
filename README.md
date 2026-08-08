@@ -94,7 +94,7 @@ npm run deploy
 
 ## 🎯 使用说明
 
-1. **配置大模型**：左下角「设置」→ 填写 OpenAI 兼容 Base URL（如 `https://api.deepseek.com`）、API Key、模型（如 `deepseek-chat`）。模型下拉框已内置常见模型预设。
+1. **配置大模型**：左下角「设置」→ 填写 OpenAI 兼容 Base URL（如 `https://api.deepseek.com`）、API Key、模型（如 `deepseek-chat`）。模型下拉框已内置常见模型预设。「接口类型」支持两种：`chat/completions`（兼容 DeepSeek 等，默认）与 `responses`（OpenAI Responses API，部分网关/模型使用）。
 2. **配置 Cloudflare**（二选一，推荐方式一）：
    - **方式一 · 在线登录（推荐）**：点击「开始在线登录」，浏览器自动打开 Cloudflare 官方授权页，输入设备码并授权即可。无需手动创建任何 Token，登录态自动保存并在到期时自动刷新。
    - **方式二 · 手动 API Token**：填写 API Token 与 Account ID，点击「测试连接」验证并自动获取 workers.dev 子域。保存后即内置登录态，后续无需再登录。
@@ -157,6 +157,11 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-08**：v1.2.0 修复部署与接口兼容
+  - 部署：修复 10021 错误（模块 part Content-Type 改为 application/javascript+module）；已远程部署到 https://builder.logg.asia
+  - Agent：新增 responses 接口类型（OpenAI Responses API），设置面板可切换 chat/completions / responses
+  - 前端：登录态提示识别 OAuth 在线登录，登录后不再误报未配置 Cloudflare
+  - 提示词：强化 Cloudflare Worker 平台约束（禁 Node.js 特性、禁 npm 依赖、输出完整模块代码）
 - **2026-08-08**：v1.1.0 新增 Cloudflare 在线登录
   - 后端：`src/oauth.js` 设备码 OAuth 流程（复用官方客户端零配置）、access_token 自动刷新、凭据解析重构（OAuth 优先）
   - 前端：设置面板新增「在线登录」卡片与授权弹窗（设备码展示、自动打开授权页、轮询、倒计时），登录后显示账号与子域
