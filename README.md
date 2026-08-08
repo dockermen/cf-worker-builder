@@ -4,7 +4,7 @@
 
 - 配置任意 **OpenAI 兼容** 大模型（Base URL / Key / 模型），即可接入 **DeepSeek**、OpenAI、Moonshot、GLM 等作为构建 Agent；
 - 以 **项目** 为单位，用对话描述需求，Agent 生成完整的 Worker 代码并 **自动发布到 Cloudflare Workers**，直接返回可访问地址；
-- **内置 Cloudflare 登录态**：API Token / Account ID 持久化保存在构建器自己的 KV 中，部署时自动复用，无需每次登录。
+- **内置 Cloudflare 登录态**：支持「在线登录」（设备码 OAuth，类似 `wrangler login --device`，零配置浏览器授权）与手动 API Token，令牌持久化在 KV 且到期自动刷新，无需每次登录。
 
 ## ✨ 功能特性
 
@@ -12,7 +12,7 @@
 | --- | --- |
 | 1. 可配置 OpenAI Baseurl / Key / 模型 | 设置面板中保存，支持任意 OpenAI 兼容服务（DeepSeek 等），密钥脱敏显示 |
 | 2. 以项目为单位创建，自动发布并给地址 | 项目 CRUD + 对话生成代码 + 自动部署到 workers.dev 并返回 URL，后续可在对话框继续提需求迭代修改 |
-| 3. 内置 Cloudflare 登录态 | Token / Account ID 存入 KV，一次配置永久复用；提供「测试连接」校验并缓存 workers.dev 子域 |
+| 3. 内置 Cloudflare 登录态 | 支持「在线登录」（设备码 OAuth，类似 `wrangler login --device`，零配置浏览器授权）与手动 API Token；令牌持久化在 KV 且**到期自动刷新**，无需每次登录 |
 
 其他细节：
 
@@ -40,6 +40,7 @@ Cloudflare Worker（src/index.js）
 - **存储**：Workers KV（`BUILDER_KV`）——设置、项目列表、项目详情（含代码与对话历史）
 - **Agent**：`src/agent.js` 封装 OpenAI 兼容接口，系统提示词约束模型输出「完整 ES Module Worker 代码」到 ```javascript 代码块
 - **部署**：`src/deploy.js` 使用 Cloudflare 官方 REST API 上传脚本（multipart）并启用 workers.dev 子域
+- **在线登录**：`src/oauth.js` 实现 OAuth 2.0 设备码流程（复用 Cloudflare 官方公开客户端 ID，零配置），access_token 过期后自动用 refresh_token 刷新
 
 ## 📁 目录结构
 
@@ -53,6 +54,7 @@ cf-worker-builder/
     ├── index.js          # 主入口 + API 路由
     ├── agent.js          # LLM Agent（OpenAI 兼容 chat/completions）
     ├── deploy.js         # Cloudflare 部署层（上传脚本、启用子域）
+    ├── oauth.js          # Cloudflare 在线登录（设备码 OAuth + 令牌刷新）
     ├── store.js          # KV 数据访问层
     └── util.js           # 工具函数（slug、代码提取、脱敏等）
 ```
@@ -93,7 +95,9 @@ npm run deploy
 ## 🎯 使用说明
 
 1. **配置大模型**：左下角「设置」→ 填写 OpenAI 兼容 Base URL（如 `https://api.deepseek.com`）、API Key、模型（如 `deepseek-chat`）。模型下拉框已内置常见模型预设。
-2. **配置 Cloudflare**：填写 API Token（需要 Workers 脚本编辑权限）与 Account ID，点击「测试连接」验证并自动获取 workers.dev 子域。保存后即内置登录态，后续无需再登录。
+2. **配置 Cloudflare**（二选一，推荐方式一）：
+   - **方式一 · 在线登录（推荐）**：点击「开始在线登录」，浏览器自动打开 Cloudflare 官方授权页，输入设备码并授权即可。无需手动创建任何 Token，登录态自动保存并在到期时自动刷新。
+   - **方式二 · 手动 API Token**：填写 API Token 与 Account ID，点击「测试连接」验证并自动获取 workers.dev 子域。保存后即内置登录态，后续无需再登录。
 3. **新建项目**：点击「＋ 新建项目」，填写名称与描述。
 4. **对话构建**：在对话框描述需求，例如「做一个天气查询 API，GET /weather?city=北京 返回 JSON」。Agent 生成完整代码后自动部署，聊天记录中会出现 `✅ 已自动部署到：https://xxx.workers.dev`。
 5. **迭代修改**：继续在对话框提新需求（如「加一个 /about 页面」），Agent 会基于历史对话修改代码并重新部署，地址保持不变。
@@ -106,12 +110,37 @@ npm run deploy
 | GET | `/api/state` | 全局状态（脱敏设置 + 项目列表） |
 | POST | `/api/settings` | 保存 LLM 配置与 Cloudflare 登录态（留空字段保持原值） |
 | POST | `/api/test-cf` | 测试 Cloudflare 凭据并返回 workers.dev 子域 |
+| POST | `/api/oauth/start` | 发起在线登录（设备码），返回授权地址与设备码 |
+| GET | `/api/oauth/status` | 轮询授权状态；授权完成后自动换取并保存令牌 |
+| POST | `/api/oauth/refresh` | 手动刷新 access_token |
+| POST | `/api/oauth/logout` | 退出登录（撤销令牌） |
 | GET/POST | `/api/projects` | 项目列表 / 创建项目 |
 | GET/DELETE | `/api/projects/:id` | 项目详情 / 删除 |
 | POST | `/api/projects/:id/chat` | 对话（`{message, autoDeploy}`），自动提取代码并部署 |
 | POST | `/api/projects/:id/deploy` | 手动部署当前代码 |
 | PUT | `/api/projects/:id/code` | 更新代码 |
 | POST | `/api/projects/:id/clear` | 清空对话历史 |
+
+## 🔑 Cloudflare 凭据获取
+
+### 方式一：在线登录（推荐，无需创建 Token）
+
+在构建器「设置 → ② Cloudflare」中点击「开始在线登录」：
+
+1. 构建器向 Cloudflare 申请设备码，并自动打开官方授权页面 `dash.cloudflare.com/oauth2/device/verify`；
+2. 在弹出的页面中输入显示的**设备码**（或直接确认已自动打开的授权页）；
+3. 登录你的 Cloudflare 账号并点击 **Allow / 授权**；
+4. 构建器自动完成登录，显示已登录账号与 workers.dev 子域。
+
+该方式复用 Cloudflare 官方（wrangler）公开的 OAuth 客户端，**零配置**；若官方客户端被限制，可在 `wrangler.toml` 的 `[vars]` 中配置自建 OAuth 客户端的 `OAUTH_CLIENT_ID`（创建位置：dash.cloudflare.com → 账号 → **Manage Account → OAuth clients** → Create client，流程选 Authorization Code，权限勾选 Workers Scripts → Edit 等）。
+
+### 方式二：手动 API Token
+
+1. 打开 [dash.cloudflare.com](https://dash.cloudflare.com) 并登录；
+2. 点击右上角**头像 → My Profile（我的个人资料）→ API Tokens → Create Token（创建令牌）**；
+3. 模板区选择 **「Edit Cloudflare Workers（编辑 Cloudflare Workers）」** → Use template（或自定义，权限至少勾选：Account → Workers Scripts → **Edit**、Account Settings → Read）；
+4. 点击 **Continue to summary → Create Token**，复制生成的 Token；
+5. **Account ID** 在 dashboard 首页右侧「Account ID」字段，或 头像 → My Profile 页面查看。
 
 ## 🔒 安全说明
 
@@ -128,6 +157,10 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-08**：v1.1.0 新增 Cloudflare 在线登录
+  - 后端：`src/oauth.js` 设备码 OAuth 流程（复用官方客户端零配置）、access_token 自动刷新、凭据解析重构（OAuth 优先）
+  - 前端：设置面板新增「在线登录」卡片与授权弹窗（设备码展示、自动打开授权页、轮询、倒计时），登录后显示账号与子域
+  - 文档：补充 Cloudflare Token 获取位置与在线登录说明
 - **2026-08-08**：v1.0.0 首个版本
   - 后端：API 路由、KV 存储、OpenAI 兼容 LLM Agent、Cloudflare 自动部署（上传脚本 + 启用 workers.dev 子域）
   - 前端：深色单页应用（项目列表 / 对话 / 代码编辑器 / 设置面板），支持自动部署开关、代码复制、地址复制
