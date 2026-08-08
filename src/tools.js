@@ -88,26 +88,38 @@ export async function executeHttpTest(specOrSpecText) {
   // MARKDOWN 模式：通过 r.jina.ai reader 获取网页 Markdown（作为资料依据）
   let target = parsed.url;
   let method = parsed.method;
+  let fallback = false;
   if (method === 'MARKDOWN') {
     target = `https://r.jina.ai/${parsed.url}`;
     method = 'GET';
   }
 
   try {
-    const res = await fetch(target, {
+    let res = await fetch(target, {
       method,
       headers: parsed.headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : parsed.body || undefined,
       signal: controller.signal,
       redirect: 'follow',
     });
+    // MARKDOWN 服务限流/失败时自动降级：直接 GET 原 URL 获取原始内容（HTML 源码同样有参考价值）
+    if (parsed.method === 'MARKDOWN' && (res.status === 429 || res.status === 403 || res.status >= 500)) {
+      fallback = true;
+      const fallbackRes = await fetch(parsed.url, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      res = fallbackRes;
+    }
     const bodyText = await res.text().catch(() => '');
     return {
-      method: parsed.method,
+      method: fallback ? 'GET(降级)' : parsed.method,
       url: parsed.url,
       status: res.status,
       statusText: res.statusText,
       contentType: res.headers.get('content-type') || '',
+      fallback,
       body: bodyText.slice(0, 3000),
     };
   } catch (e) {
@@ -124,7 +136,13 @@ export function formatToolResult(result, index) {
   if (!result) return '';
   if (result.error) return `🔧 工具结果（#${index || 1}）请求失败：${result.error}`;
   const bodyPreview = (result.body || '').slice(0, 1500);
-  return `🔧 工具结果（#${index || 1}）[${result.method} ${result.url}]：HTTP ${result.status}${bodyPreview ? '\n```\n' + bodyPreview + '\n```' : ''}`;
+  let tip = '';
+  if (result.status === 429) {
+    tip = '\n⚠️ 该目标服务限流（429）。**不要重复请求同一 URL**：可改用 GET 直接获取原始内容，或停止获取、基于已有信息继续。';
+  } else if (result.fallback) {
+    tip = '\n（注：MARKDOWN 服务限流/不可用，已自动降级为直接 GET 原始内容）';
+  }
+  return `🔧 工具结果（#${index || 1}）[${result.method} ${result.url}]：HTTP ${result.status}${tip}${bodyPreview ? '\n```\n' + bodyPreview + '\n```' : ''}`;
 }
 
 /** 把测试结果格式化为对话中展示的消息 */

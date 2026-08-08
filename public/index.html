@@ -1024,14 +1024,18 @@ function renderChatResume(status) {
   showChatResume(text);
 }
 
+function isChatStale(status) {
+  // 以「最后心跳时间 updatedAt」判断：超过 90 秒无进展视为请求已中断（Worker 可能被终止，状态残留）
+  const last = status.updatedAt || status.startedAt || Date.now();
+  return Date.now() - last > 90000;
+}
+
 async function watchChatStatus(id) {
   if (state.chatWatch) { clearInterval(state.chatWatch); state.chatWatch = null; }
   try {
     const r = await api(`/api/projects/${id}/chat-status`);
     if (!r.status) { hideChatResume(); return; }
-    const started = r.status.startedAt || Date.now();
-    const stale = Date.now() - started > 600000; // 10 分钟视为异常残留
-    if (r.status.status === 'running' && !stale) {
+    if (r.status.status === 'running' && !isChatStale(r.status)) {
       renderChatResume(r.status);
       state.chatWatch = setInterval(async () => {
         try {
@@ -1047,13 +1051,23 @@ async function watchChatStatus(id) {
               renderProject(d.project);
             }
             toast('💬 后台对话已完成，记录已刷新');
+          } else if (isChatStale(r2.status)) {
+            // 长时间无心跳：请求大概率已中断，及时提示，避免一直显示“部署中”
+            clearInterval(state.chatWatch);
+            state.chatWatch = null;
+            showChatResume('⚠️ 上次对话已中断（长时间无进展），已发送的内容保留在记录中，可重新发送');
+            const d = await api(`/api/projects/${id}`).catch(() => null);
+            if (d && state.project && state.project.id === id) {
+              state.project = d.project;
+              renderProject(d.project);
+            }
           } else {
             renderChatResume(r2.status); // 实时进度
           }
         } catch (_) { /* ignore */ }
       }, 2500);
     } else if (r.status.status === 'running') {
-      showChatResume('⚠️ 上次对话可能已中断（超时），已发送的内容保留在记录中，可重新发送');
+      showChatResume('⚠️ 上次对话已中断（长时间无进展），已发送的内容保留在记录中，可重新发送');
     }
   } catch (_) { /* ignore */ }
 }
