@@ -764,10 +764,12 @@ function renderProject(p) {
   }
   const memBar = $('#projectMemory');
   if (memBar) {
-    const mem = p.memory && p.memory.summary;
-    if (mem) {
+    const memDoc = p.memory && (p.memory.doc || p.memory.summary);
+    if (memDoc) {
       memBar.classList.remove('hidden');
-      memBar.textContent = '📝 ' + mem;
+      // 摘要取第一段有效内容
+      const firstLine = String(memDoc).split('\n').find((l) => l.trim() && !l.trim().startsWith('#'));
+      memBar.textContent = '📝 ' + (firstLine || String(memDoc).slice(0, 60));
     } else {
       memBar.classList.add('hidden');
     }
@@ -1559,20 +1561,11 @@ async function openVersions() {
 
 function openMemory() {
   if (!state.project || !state.project.memory) return;
-  $('#memorySummary').textContent = state.project.memory.summary || '（暂无摘要）';
+  const doc = state.project.memory.doc || state.project.memory.summary || '（暂无记忆）';
+  $('#memorySummary').innerHTML = renderMarkdown(doc);
   const ups = $('#memoryUpdates');
   ups.innerHTML = '';
-  const updates = state.project.memory.updates || [];
-  if (!updates.length) {
-    ups.innerHTML = '<div class="muted" style="color:var(--muted);font-size:12px">暂无更新记录</div>';
-  } else {
-    updates.slice().reverse().forEach((u) => {
-      const d = document.createElement('div');
-      d.className = 'mem-update';
-      d.textContent = new Date(u.at).toLocaleString() + ' — ' + u.text;
-      ups.appendChild(d);
-    });
-  }
+  ups.style.display = 'none';
   $('#memoryDialog').showModal();
 }
 

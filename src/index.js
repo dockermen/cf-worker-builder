@@ -247,10 +247,7 @@ async function handleApi(request, url, env, store) {
       versions: [],
       nextVersion: 1,
       memory: {
-        summary: body.description
-          ? `项目描述：${String(body.description).trim()}（基础模板，功能随对话完善）`
-          : '基础 Worker 模板（Hello World），尚未实现具体功能。',
-        updates: [],
+        doc: `# 项目记忆\n\n## 一、需求\n${body.description ? String(body.description).trim() : '（待通过对话补充需求）'}\n\n## 二、功能\n- 基础 Hello Worker 模板，尚未实现具体功能。\n\n## 三、技术信息\n- 平台：Cloudflare Workers（ES Module 格式）\n- 入口：export default { async fetch(request, env, ctx) }\n\n## 四、变更记录\n- 暂无`,
         updatedAt: now,
       },
       createdAt: now,
@@ -341,21 +338,25 @@ async function handleApi(request, url, env, store) {
       ],
       versions: [],
       nextVersion: 1,
-      memory: { summary: `已关联 Cloudflare Worker：${workerName}`, updates: [], updatedAt: now },
+      memory: {
+        doc: `# 项目记忆\n\n## 一、需求\n（待分析）\n\n## 二、功能\n（待分析）\n\n## 三、技术信息\n- 关联 Worker：${workerName}\n\n## 四、变更记录\n- 关联导入`,
+        updatedAt: now,
+      },
       createdAt: now,
       updatedAt: now,
     };
-    // 用 LLM 分析远程代码，把「当前实现的功能」写入项目记忆（LLM 未配置/失败时降级）
+    // 用 LLM 分析远程代码，生成详细的项目记忆文档（需求/功能/技术信息），作为后续代码生成依据
     try {
       const analysis = await callChatCompletion(settings, [
         {
           role: 'system',
-          content: '你是代码分析器。请用中文要点总结这个 Cloudflare Worker 实现了哪些功能（200 字以内，不要输出代码）。',
+          content:
+            '你是代码分析器。请分析下面的 Cloudflare Worker 代码，输出详细的项目记忆文档（Markdown），必须包含：## 一、需求（推断用户核心需求）## 二、功能（逐条列出已实现功能）## 三、技术信息（路由、外部依赖、关键实现与注意事项）## 四、变更记录（初始：关联导入）。要求详细准确，500 字以内，不要输出代码。',
         },
         { role: 'user', content: String(code || '').slice(0, 4000) },
       ]);
       if (analysis) {
-        project.memory = { summary: String(analysis).slice(0, 500), updates: [], updatedAt: now };
+        project.memory = { doc: String(analysis).slice(0, 3000), updatedAt: now };
       }
     } catch (_) { /* 降级保留默认记忆 */ }
     // 探测子域并拼接访问地址
@@ -812,35 +813,31 @@ async function streamChatAction(request, store, id) {
  * 优先用 LLM 整合摘要，失败时降级为只记录需求更新列表。
  */
 async function updateProjectMemory(store, settings, project, userMessage) {
-  const oldSummary = (project.memory && project.memory.summary) || '（暂无记录）';
+  // 兼容旧格式：doc 优先，旧 summary/updates 回退
+  const oldMemory = project.memory || {};
+  const oldDoc = oldMemory.doc || oldMemory.summary || '（暂无记录）';
+  const oldUpdates = (oldMemory.updates || []).map((u) => `${new Date(u.at).toLocaleString()}：${u.text}`).join('\n');
   const prompt = [
     {
       role: 'system',
       content:
-        '你是项目功能文档维护者。请根据「现有项目记忆」与「本次用户新需求」，输出更新后的项目功能简介（中文要点，覆盖所有已实现功能与本次新增改动，300 字以内，不要输出代码）。',
+        '你是项目记忆维护者。根据「旧记忆文档」「本次用户需求」「当前代码」，输出更新后的详细项目记忆文档（Markdown），必须包含：## 一、需求（用户核心需求，保留历史并合并新增）## 二、功能（已实现功能清单，逐条说明）## 三、技术信息（路由、外部依赖、关键实现与注意事项）## 四、变更记录（保留历史，末尾追加本次：时间+需求+改动）。要求详细准确，作为后续代码生成的依据，600 字以内，不要输出代码。',
     },
     {
       role: 'user',
-      content: `现有项目记忆：\n${oldSummary}\n\n本次用户新需求：\n${String(userMessage || '').slice(0, 300)}\n\n当前项目代码开头（供参考）：\n${String(project.code || '').slice(0, 1200)}`,
+      content: `旧记忆文档：\n${oldDoc}\n\n旧更新记录：\n${oldUpdates || '（无）'}\n\n本次用户需求：\n${String(userMessage || '').slice(0, 300)}\n\n当前项目代码开头（供参考）：\n${String(project.code || '').slice(0, 1500)}`,
     },
   ];
   try {
-    const summary = await callChatCompletion(settings, prompt);
-    const memory = project.memory || { summary: '', updates: [], updatedAt: 0 };
-    memory.summary = String(summary || '').slice(0, 600);
-    memory.updates = memory.updates || [];
-    memory.updates.push({ at: Date.now(), text: String(userMessage || '').slice(0, 200) });
-    if (memory.updates.length > 20) memory.updates = memory.updates.slice(-20);
-    memory.updatedAt = Date.now();
-    project.memory = memory;
+    const doc = await callChatCompletion(settings, prompt);
+    project.memory = { doc: String(doc || '').slice(0, 3000), updatedAt: Date.now() };
   } catch (_) {
-    // 降级：LLM 不可用时至少记录需求
-    const memory = project.memory || { summary: '', updates: [], updatedAt: 0 };
-    memory.updates = memory.updates || [];
-    memory.updates.push({ at: Date.now(), text: String(userMessage || '').slice(0, 200) });
-    if (memory.updates.length > 20) memory.updates = memory.updates.slice(-20);
-    memory.updatedAt = Date.now();
-    project.memory = memory;
+    // 降级：在记忆文档末尾追加变更记录
+    const append = `\n- ${new Date().toLocaleString()}：${String(userMessage || '').slice(0, 200)}`;
+    project.memory = {
+      doc: `${oldDoc}${oldUpdates ? '' : ''}\n\n## 变更记录（降级追加）${append}`.slice(0, 3000),
+      updatedAt: Date.now(),
+    };
   }
 }
 
@@ -861,6 +858,14 @@ ${project.code || '(暂无代码)'}
 \`\`\``,
     },
   ];
+  // 注入项目详细记忆（需求/功能/技术信息），作为后续代码生成的依据
+  if (project.memory && (project.memory.doc || project.memory.summary)) {
+    messages.push({
+      role: 'system',
+      content: `【项目功能记忆：后续代码生成的依据，请据此理解项目并继续开发】\n${project.memory.doc || project.memory.summary}`,
+    });
+  }
+
   if (project.compacted && project.compacted.summary) {
     // 早期对话已压缩为摘要，保留要点；最近消息完整保留
     messages.push({
