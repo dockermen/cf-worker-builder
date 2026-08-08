@@ -78,9 +78,16 @@ export function pushVersion(project, note, url) {
     note: note || `版本 ${v}`,
     url: url || project.url || '',
     deployed: !!url,
+    tagged: false, // 打 tag 的版本永久保留，不受上限限制
     createdAt: Date.now(),
   });
-  while (versions.length > MAX_VERSIONS) versions.shift();
+  // 上限策略：仅清理「未打 tag」的最旧版本，tagged 版本永久保留
+  let untagged = versions.filter((x) => !x.tagged);
+  while (untagged.length > MAX_VERSIONS) {
+    const oldest = untagged.shift();
+    const idx = versions.indexOf(oldest);
+    if (idx >= 0) versions.splice(idx, 1);
+  }
   project.versions = versions;
   project.nextVersion = v + 1;
 }

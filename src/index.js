@@ -391,6 +391,21 @@ async function handleApi(request, url, env, store) {
     return json({ project, deployed, url });
   }
 
+  // ============ 版本打 tag（标记版本永久保留，不受数量上限限制） ============
+  const tagMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/(\d+)\/tag$/);
+  if (tagMatch && method === 'POST') {
+    const project = await store.getProject(tagMatch[1]);
+    if (!project) return json({ error: '项目不存在' }, 404);
+    const v = Number(tagMatch[2]);
+    const ver = (project.versions || []).find((x) => x.v === v);
+    if (!ver) return json({ error: '版本不存在' }, 404);
+    const body = await readBody();
+    ver.tagged = body.tag === true || body.tag === 'true';
+    project.updatedAt = Date.now();
+    await store.saveProject(project);
+    return json({ version: ver, tagged: ver.tagged });
+  }
+
   // ============ 对话进行中状态查询 ============
   const statusMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status$/);
   if (statusMatch && method === 'GET') {

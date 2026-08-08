@@ -485,7 +485,7 @@
     <button id="btnVersionClose" class="close" aria-label="关闭">✕</button>
   </div>
   <div class="dialog-body" style="padding:12px 16px">
-    <p class="hint" style="margin-bottom:8px">每次部署会自动存档一个版本（最多保留 20 个），可查看、恢复或重新部署历史版本。</p>
+    <p class="hint" style="margin-bottom:8px">每次部署会自动存档一个版本。⭐ 标记的版本<u>永久保留</u>（不受上限限制），未标记版本最多保留 20 个（自动清理最旧的）。可查看、恢复或重新部署历史版本。</p>
     <div id="versionList" style="display:flex;flex-direction:column;gap:8px"></div>
   </div>
 </dialog>
@@ -1420,15 +1420,19 @@ async function openVersions() {
       item.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;';
       const time = new Date(ver.createdAt).toLocaleString();
       item.innerHTML = `
-        <div style="font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span>#${ver.v} · ${esc(ver.note || '')}</span>
-          ${ver.deployed ? '<span class="badge ok">已部署</span>' : '<span class="badge off">未部署</span>'}
+          <span style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+            ${ver.tagged ? '<span class="badge" style="color:var(--yellow);background:rgba(255,200,87,.15)">⭐ 已标记</span>' : ''}
+            ${ver.deployed ? '<span class="badge ok">已部署</span>' : '<span class="badge off">未部署</span>'}
+          </span>
         </div>
         <div style="font-size:11px;color:var(--muted)">${time}${ver.url ? ' · ' + esc(ver.url.replace(/^https?:\/\//, '')) : ''}</div>
-        <div style="display:flex;gap:6px;margin-top:2px">
+        <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
           <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="view" data-v="${ver.v}">查看代码</button>
           <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="restore" data-v="${ver.v}">恢复</button>
           <button class="btn primary" style="font-size:12px;padding:4px 10px" data-act="redeploy" data-v="${ver.v}">恢复并部署</button>
+          <button class="btn ghost" style="font-size:12px;padding:4px 10px;color:var(--yellow)" data-act="tag" data-v="${ver.v}">${ver.tagged ? '取消标记' : '⭐ 标记'}</button>
         </div>`;
       item.querySelector('[data-act="view"]').addEventListener('click', () => {
         // 把版本代码载入编辑器并切换到代码页
@@ -1448,6 +1452,17 @@ async function openVersions() {
           renderProject(res.project);
           renderSidebar();
           toast(`✅ 已恢复到版本 #${ver.v}（未部署）`);
+        } catch (e) { toast(e.message, true); }
+      });
+      item.querySelector('[data-act="tag"]').addEventListener('click', async () => {
+        try {
+          const res = await api(`/api/projects/${state.project.id}/versions/${ver.v}/tag`, {
+            method: 'POST',
+            body: JSON.stringify({ tag: !ver.tagged }),
+          });
+          ver.tagged = res.tagged;
+          toast(res.tagged ? `✅ 版本 #${ver.v} 已标记（永久保留）` : `版本 #${ver.v} 已取消标记`);
+          openVersions(); // 刷新列表
         } catch (e) { toast(e.message, true); }
       });
       item.querySelector('[data-act="redeploy"]').addEventListener('click', async () => {
