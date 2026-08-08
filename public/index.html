@@ -1423,7 +1423,7 @@ async function openVersions() {
         <div style="font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span>#${ver.v} · ${esc(ver.note || '')}</span>
           <span style="display:flex;gap:6px;align-items:center;flex-shrink:0">
-            ${ver.tagged ? '<span class="badge" style="color:var(--yellow);background:rgba(255,200,87,.15)">⭐ 已标记</span>' : ''}
+            ${ver.tagged ? '<span class="badge" style="color:var(--yellow);background:rgba(255,200,87,.15)">★ 已标记</span>' : ''}
             ${ver.deployed ? '<span class="badge ok">已部署</span>' : '<span class="badge off">未部署</span>'}
           </span>
         </div>
@@ -1432,7 +1432,7 @@ async function openVersions() {
           <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="view" data-v="${ver.v}">查看代码</button>
           <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="restore" data-v="${ver.v}">恢复</button>
           <button class="btn primary" style="font-size:12px;padding:4px 10px" data-act="redeploy" data-v="${ver.v}">恢复并部署</button>
-          <button class="btn ghost" style="font-size:12px;padding:4px 10px;color:var(--yellow)" data-act="tag" data-v="${ver.v}">${ver.tagged ? '取消标记' : '⭐ 标记'}</button>
+          <button class="btn ghost" style="font-size:12px;padding:4px 10px;color:${ver.tagged ? 'var(--yellow)' : 'var(--muted)'}" data-act="tag" data-v="${ver.v}">${ver.tagged ? '★ 取消标记' : '☆ 标记'}</button>
         </div>`;
       item.querySelector('[data-act="view"]').addEventListener('click', () => {
         // 把版本代码载入编辑器并切换到代码页
