@@ -12,3 +12,6 @@ assets = { directory = "./public", binding = "ASSETS" }
 [[kv_namespaces]]
 binding = "BUILDER_KV"
 id = "00000000-0000-0000-0000-000000000000"
+
+# [vars]
+# OAUTH_CLIENT_ID = "自建 Cloudflare OAuth 客户端 ID（可选，默认复用 wrangler 官方客户端，零配置在线登录）"

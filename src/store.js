@@ -2,9 +2,11 @@
  * KV 数据访问层
  *
  * 数据模型：
- * - settings            => { openaiBaseUrl, openaiKey, openaiModel, cfToken, cfAccountId, cfSubdomain }
- * - projects            => [{ id, name, workerName, url, deployed, updatedAt }]（项目列表索引）
- * - project:{id}        => 完整项目（含代码与对话历史）
+ * - settings           => { openaiBaseUrl, openaiKey, openaiModel, cfToken, cfAccountId, cfSubdomain }
+ * - oauth_device       => { clientId, deviceCode, expiresAt, interval }（进行中的设备码登录）
+ * - cf_oauth           => { clientId, accessToken, refreshToken, expiresAt, accountId, accountName, email }（在线登录态）
+ * - projects           => [{ id, name, workerName, url, deployed, updatedAt }]（项目列表索引）
+ * - project:{id}       => 完整项目（含代码与对话历史）
  */
 
 export function makeStore(kv) {
@@ -57,6 +59,36 @@ export function makeStore(kv) {
       await kv.delete(`project:${id}`);
       const list = await this.listProjects();
       await this.saveProjectList(list.filter((p) => p.id !== id));
+    },
+
+    // ============ OAuth（Cloudflare 在线登录） ============
+
+    /** 进行中的设备码流程 */
+    async getOAuthDevice() {
+      const raw = await kv.get('oauth_device', 'json');
+      return raw || null;
+    },
+
+    async saveOAuthDevice(device) {
+      await kv.put('oauth_device', JSON.stringify(device));
+    },
+
+    async clearOAuthDevice() {
+      await kv.delete('oauth_device');
+    },
+
+    /** 已登录的 OAuth 凭据（access/refresh token 等） */
+    async getOAuth() {
+      const raw = await kv.get('cf_oauth', 'json');
+      return raw || null;
+    },
+
+    async saveOAuth(oauth) {
+      await kv.put('cf_oauth', JSON.stringify(oauth));
+    },
+
+    async clearOAuth() {
+      await kv.delete('cf_oauth');
     },
   };
 }

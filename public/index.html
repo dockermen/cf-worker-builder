@@ -220,6 +220,23 @@
   ::-webkit-scrollbar-thumb { background: #2a3344; border-radius: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
 
+  /* ---------- OAuth 在线登录 ---------- */
+  .oauth-card { border: 1px solid rgba(79,140,255,.35); background: rgba(79,140,255,.06); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .oauth-title { font-size: 14px; font-weight: 600; color: var(--text); }
+  .oauth-desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+  .oauth-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .oauth-logged { font-size: 13px; color: var(--green); }
+  .oauth-meta { font-size: 12px; color: var(--muted); line-height: 1.7; margin-top: 4px; word-break: break-all; }
+  .oauth-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .or-divider { text-align: center; font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .oauth-flow { align-items: center; text-align: center; gap: 14px; }
+  .user-code-box { background: var(--panel2); border: 1px dashed var(--accent); border-radius: 10px; padding: 14px 20px; width: 100%; }
+  .user-code-label { font-size: 12px; color: var(--muted); }
+  .user-code { font-family: var(--mono); font-size: 34px; font-weight: 700; letter-spacing: 6px; color: var(--accent); margin: 6px 0; }
+  .user-code-box p { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  #oauthVerifyUrl { font-size: 12px; color: var(--accent); word-break: break-all; max-width: 100%; }
+  #oauthWait { font-size: 13px; color: var(--muted); }
+
   @media (max-width: 760px) {
     .sidebar { width: 200px; min-width: 200px; }
     .ws-header { flex-direction: column; align-items: flex-start; }
@@ -345,6 +362,14 @@
     </label>
 
     <h4>② Cloudflare（自动发布 Worker）</h4>
+    <div class="oauth-card">
+      <div>
+        <div class="oauth-title">🌐 在线登录（推荐，无需手动创建 Token）</div>
+        <div class="oauth-desc">类似 wrangler login：浏览器一键授权，登录态自动保存并自动刷新，无需每次登录</div>
+      </div>
+      <div id="oauthStatusBox" class="oauth-status"></div>
+    </div>
+    <div class="or-divider">—— 或使用手动 API Token ——</div>
     <label>API Token
       <input id="setCfToken" type="password" placeholder="Cloudflare API Token（需 Workers Scripts 编辑权限）" autocomplete="off" />
     </label>
@@ -356,12 +381,30 @@
       <span id="cfTestResult" class="muted" style="font-size:12px;color:var(--muted)"></span>
     </div>
     <p class="hint">
-      🔒 Token 与 Account ID 保存在构建器自己的 KV 存储中，部署时自动复用（内置登录态），无需每次登录。
-      建议使用仅包含 Workers 脚本读写权限的受限 Token。
+      🔒 无论哪种方式，凭据都保存在构建器自己的 KV 存储中（在线登录的令牌到期会自动刷新），部署时自动复用。
+      API Token 可在 dash.cloudflare.com → 头像 → My Profile → API Tokens → Create Token 创建（模板选「Edit Cloudflare Workers」）。
     </p>
   </div>
   <div class="dialog-foot">
     <button id="btnSaveSettings" type="button" class="btn primary">保存设置</button>
+  </div>
+</dialog>
+
+<!-- ================= Cloudflare 在线登录弹窗 ================= -->
+<dialog id="oauthDialog" class="dialog">
+  <div class="dialog-head">
+    <h3>🔑 Cloudflare 在线登录</h3>
+    <button id="btnOauthClose" class="close" aria-label="关闭">✕</button>
+  </div>
+  <div class="dialog-body oauth-flow">
+    <div class="user-code-box">
+      <div class="user-code-label">设备码（在 Cloudflare 授权页输入）</div>
+      <div id="oauthUserCode" class="user-code">------</div>
+      <p>已在新标签页打开授权页面；若未自动打开，请点击下方链接手动打开并输入设备码</p>
+    </div>
+    <a id="oauthVerifyUrl" href="#" target="_blank" rel="noopener"></a>
+    <div id="oauthWait">⏳ 等待授权，剩余 <span id="oauthCountdown">300</span> 秒…</div>
+    <button id="btnOauthCancel" type="button" class="btn ghost">取消</button>
   </div>
 </dialog>
 
@@ -472,6 +515,7 @@ function updateCfgHint() {
 async function refreshProjects() {
   const data = await api('/api/state');
   state.settings = data.settings;
+  state.oauth = data.oauth || { loggedIn: false };
   state.projects = data.projects;
   renderSidebar();
   updateCfgHint();
@@ -668,7 +712,111 @@ function openSettings() {
   $('#setCfToken').placeholder = s.hasCfToken ? `已保存：${s.cfTokenMasked}（留空则保持不变）` : 'Cloudflare API Token';
   $('#setAccountId').value = s.cfAccountId || '';
   $('#cfTestResult').textContent = s.cfSubdomain ? `子域：${s.cfSubdomain}.workers.dev` : '';
+  renderOauthStatus();
   $('#settingsDialog').showModal();
+}
+
+/* ---------------- Cloudflare 在线登录（设备码 OAuth） ---------------- */
+
+let oauthTimer = null;
+
+function renderOauthStatus() {
+  const box = $('#oauthStatusBox');
+  if (!box) return;
+  box.innerHTML = '';
+  const o = state.oauth || { loggedIn: false };
+  if (o.loggedIn) {
+    const info = document.createElement('div');
+    info.className = 'oauth-info';
+    info.innerHTML = `
+      <div class="oauth-logged">✅ 已登录${o.email ? '：<b>' + esc(o.email) + '</b>' : ''}${o.accountName ? '（' + esc(o.accountName) + '）' : ''}</div>
+      <div class="oauth-meta">${o.accountId ? 'Account ID：' + esc(o.accountId) + '<br>' : ''}${state.settings && state.settings.cfSubdomain ? '子域：' + esc(state.settings.cfSubdomain) + '.workers.dev' : ''}</div>
+      <div class="oauth-actions">
+        <button id="btnOauthRefresh" type="button" class="btn ghost" style="font-size:12px;padding:5px 10px">🔄 刷新令牌</button>
+        <button id="btnOauthLogout" type="button" class="btn ghost danger-ghost" style="font-size:12px;padding:5px 10px">退出登录</button>
+      </div>`;
+    box.appendChild(info);
+    $('#btnOauthRefresh')?.addEventListener('click', refreshOauth);
+    $('#btnOauthLogout')?.addEventListener('click', logoutOauth);
+  } else {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn primary';
+    btn.textContent = '开始在线登录';
+    btn.addEventListener('click', startOauthLogin);
+    box.appendChild(btn);
+  }
+}
+
+async function startOauthLogin() {
+  try {
+    const res = await api('/api/oauth/start', { method: 'POST' });
+    $('#oauthUserCode').textContent = res.user_code;
+    const url = res.verification_uri_complete;
+    $('#oauthVerifyUrl').textContent = url;
+    $('#oauthVerifyUrl').href = url;
+    $('#oauthCountdown').textContent = res.expires_in;
+    $('#oauthDialog').showModal();
+    window.open(url, '_blank');
+    startOauthPoll(res.expires_in);
+  } catch (e) { toast(e.message, true); }
+}
+
+function stopOauthPoll() {
+  clearInterval(oauthTimer);
+  oauthTimer = null;
+}
+
+function startOauthPoll(expiresIn) {
+  stopOauthPoll();
+  const startedAt = Date.now();
+  const total = (expiresIn || 300) * 1000;
+  const tick = async () => {
+    const remain = Math.max(0, Math.ceil((total - (Date.now() - startedAt)) / 1000));
+    $('#oauthCountdown').textContent = remain;
+    if (remain <= 0) {
+      stopOauthPoll();
+      if ($('#oauthDialog').open) $('#oauthDialog').close();
+      toast('授权超时，请重新发起登录', true);
+      return;
+    }
+    try {
+      const r = await api('/api/oauth/status');
+      if (r.status === 'success') {
+        stopOauthPoll();
+        if ($('#oauthDialog').open) $('#oauthDialog').close();
+        state.oauth = r.oauth;
+        if (r.subdomain && state.settings) state.settings.cfSubdomain = r.subdomain;
+        renderOauthStatus();
+        toast('✅ Cloudflare 登录成功');
+      } else if (r.status === 'error') {
+        stopOauthPoll();
+        if ($('#oauthDialog').open) $('#oauthDialog').close();
+        toast(r.error, true);
+      }
+      // pending：继续轮询
+    } catch (_) { /* 网络抖动忽略，继续轮询 */ }
+  };
+  tick();
+  oauthTimer = setInterval(tick, 5000);
+}
+
+async function refreshOauth() {
+  try {
+    const r = await api('/api/oauth/refresh', { method: 'POST' });
+    state.oauth = r.oauth;
+    toast('✅ 令牌已刷新');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function logoutOauth() {
+  if (!confirm('确定退出 Cloudflare 在线登录？之后部署将需要重新登录。')) return;
+  try {
+    await api('/api/oauth/logout', { method: 'POST' });
+    state.oauth = { loggedIn: false };
+    renderOauthStatus();
+    toast('已退出登录');
+  } catch (e) { toast(e.message, true); }
 }
 
 async function saveSettings() {
@@ -732,6 +880,9 @@ $('#btnSettings').addEventListener('click', openSettings);
 $('#btnCreateProject').addEventListener('click', createProject);
 $('#btnSaveSettings').addEventListener('click', saveSettings);
 $('#btnTestCf').addEventListener('click', testCf);
+
+$('#btnOauthClose').addEventListener('click', () => { stopOauthPoll(); $('#oauthDialog').close(); });
+$('#btnOauthCancel').addEventListener('click', () => { stopOauthPoll(); $('#oauthDialog').close(); });
 
 $('#btnSend').addEventListener('click', sendMessage);
 $('#input').addEventListener('keydown', (e) => {
@@ -821,6 +972,7 @@ document.addEventListener('click', (e) => {
   try {
     const data = await api('/api/state');
     state.settings = data.settings;
+    state.oauth = data.oauth || { loggedIn: false };
     state.projects = data.projects;
     renderSidebar();
     updateCfgHint();

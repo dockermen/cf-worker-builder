@@ -4,13 +4,23 @@
  * 功能：
  * 1. 配置 OpenAI 兼容大模型（Base URL / Key / 模型），接入 DeepSeek 等 Agent
  * 2. 以项目为单位对话式生成 Worker 代码，自动部署到 Cloudflare Workers 并返回地址
- * 3. 内置 Cloudflare 登录态（API Token 持久化在 KV），无需每次登录
+ * 3. 内置 Cloudflare 登录态：支持「设备码在线登录」（类似 wrangler login）与手动 API Token，
+ *    Token 持久化在 KV 且自动刷新，无需每次登录
  */
 
 import { json, slugify, extractCode, maskKey, DEFAULT_CODE } from './util.js';
 import { makeStore } from './store.js';
 import { callChatCompletion, SYSTEM_PROMPT } from './agent.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection } from './deploy.js';
+import {
+  getClientId,
+  startDeviceFlow,
+  pollDeviceFlow,
+  refreshOAuthToken,
+  logoutOAuth,
+  getCredentials,
+  publicOAuth,
+} from './oauth.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -19,7 +29,7 @@ export default {
 
     try {
       if (url.pathname.startsWith('/api/')) {
-        return await handleApi(request, url, store);
+        return await handleApi(request, url, env, store);
       }
       // 非 API 请求：交给静态资源（前端页面）
       return await env.ASSETS.fetch(request);
@@ -30,7 +40,7 @@ export default {
   },
 };
 
-async function handleApi(request, url, store) {
+async function handleApi(request, url, env, store) {
   const { pathname } = url;
   const method = request.method;
   const readBody = async () => {
@@ -45,6 +55,7 @@ async function handleApi(request, url, store) {
   if (pathname === '/api/state' && method === 'GET') {
     const settings = await store.getSettings();
     const projects = await store.listProjects();
+    const oauth = await store.getOAuth();
     return json({
       settings: {
         openaiBaseUrl: settings.openaiBaseUrl || '',
@@ -56,11 +67,12 @@ async function handleApi(request, url, store) {
         cfAccountId: settings.cfAccountId || '',
         cfSubdomain: settings.cfSubdomain || '',
       },
+      oauth: publicOAuth(oauth),
       projects,
     });
   }
 
-  // ============ 设置（LLM + Cloudflare 登录态） ============
+  // ============ 设置（LLM + 手动 Cloudflare Token） ============
   if (pathname === '/api/settings' && method === 'POST') {
     const body = await readBody();
     const settings = await store.getSettings();
@@ -77,7 +89,7 @@ async function handleApi(request, url, store) {
       return json({ error: '请填写完整的 OpenAI 兼容配置（Base URL、Key、模型）' }, 400);
     }
 
-    // 可选：校验 Cloudflare 凭据并缓存 workers.dev 子域
+    // 手动 Token 方式下：可选校验 Cloudflare 凭据并缓存 workers.dev 子域
     let cfTestError = null;
     if (next.cfToken && next.cfAccountId) {
       try {
@@ -109,10 +121,17 @@ async function handleApi(request, url, store) {
   if (pathname === '/api/test-cf' && method === 'POST') {
     const body = await readBody();
     const settings = await store.getSettings();
-    const token = String(body.cfToken || '').trim() || settings.cfToken || '';
-    const accountId = String(body.cfAccountId || '').trim() || settings.cfAccountId || '';
+    let token = String(body.cfToken || '').trim() || settings.cfToken || '';
+    let accountId = String(body.cfAccountId || '').trim() || settings.cfAccountId || '';
+    // 表单与手动 Token 都为空时，回退测试在线登录凭据
     if (!token || !accountId) {
-      return json({ error: '请先填写 Cloudflare API Token 和 Account ID' }, 400);
+      try {
+        const cred = await getCredentials(store, settings);
+        token = cred.token;
+        accountId = cred.accountId;
+      } catch (e) {
+        return json({ error: e.message }, 400);
+      }
     }
     try {
       const r = await testCloudflareConnection(token, accountId);
@@ -120,6 +139,50 @@ async function handleApi(request, url, store) {
     } catch (e) {
       return json({ ok: false, error: e.message }, 400);
     }
+  }
+
+  // ============ Cloudflare 在线登录（设备码 OAuth，类似 wrangler login --device） ============
+  if (pathname === '/api/oauth/start' && method === 'POST') {
+    try {
+      const flow = await startDeviceFlow(store, getClientId(env));
+      return json({ ok: true, ...flow });
+    } catch (e) {
+      return json({ error: e.message }, 502);
+    }
+  }
+
+  if (pathname === '/api/oauth/status' && method === 'GET') {
+    const r = await pollDeviceFlow(store);
+    if (r.status === 'success') {
+      // 登录成功后探测并缓存 workers.dev 子域
+      let subdomain = '';
+      try {
+        const cred = await getCredentials(store, await store.getSettings());
+        const sd = await getAccountSubdomain(cred.token, cred.accountId);
+        subdomain = sd;
+        const settings = await store.getSettings();
+        settings.cfSubdomain = sd;
+        await store.saveSettings(settings);
+      } catch (_) {
+        /* ignore */
+      }
+      return json({ ...r, subdomain });
+    }
+    return json(r);
+  }
+
+  if (pathname === '/api/oauth/refresh' && method === 'POST') {
+    try {
+      const oauth = await refreshOAuthToken(store);
+      return json({ ok: true, oauth: publicOAuth(oauth) });
+    } catch (e) {
+      return json({ error: e.message }, 401);
+    }
+  }
+
+  if (pathname === '/api/oauth/logout' && method === 'POST') {
+    await logoutOAuth(store);
+    return json({ ok: true });
   }
 
   // ============ 项目列表 ============
@@ -275,8 +338,14 @@ async function deployAction(store, id) {
   if (!project) return json({ error: '项目不存在' }, 404);
 
   const settings = await store.getSettings();
-  if (!settings.cfToken || !settings.cfAccountId) {
-    return json({ error: '请先在「设置」中配置 Cloudflare API Token 和 Account ID' }, 400);
+  const oauth = await store.getOAuth();
+  const hasCred =
+    (oauth && oauth.accessToken) || (settings.cfToken && settings.cfAccountId);
+  if (!hasCred) {
+    return json(
+      { error: '请先在「设置」中完成 Cloudflare 在线登录，或填写 API Token + Account ID' },
+      400
+    );
   }
   if (!project.code) return json({ error: '项目还没有可部署的代码' }, 400);
 
@@ -294,16 +363,17 @@ async function deployAction(store, id) {
   }
 }
 
-/** 执行部署：缓存子域 → 上传脚本 → 返回访问地址 */
+/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 缓存子域 → 上传脚本 → 返回访问地址 */
 async function doDeploy(store, settings, project) {
+  const cred = await getCredentials(store, settings);
   if (!settings.cfSubdomain) {
-    const r = await getAccountSubdomain(settings.cfToken, settings.cfAccountId);
+    const r = await getAccountSubdomain(cred.token, cred.accountId);
     settings.cfSubdomain = r.subdomain;
     await store.saveSettings(settings);
   }
   await deployWorker({
-    cfToken: settings.cfToken,
-    accountId: settings.cfAccountId,
+    cfToken: cred.token,
+    accountId: cred.accountId,
     scriptName: project.workerName,
     code: project.code,
   });
