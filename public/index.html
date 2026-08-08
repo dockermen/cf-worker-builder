@@ -275,6 +275,17 @@
   #sidebarOverlay { display: none; position: fixed; inset: 0; z-index: 90; background: rgba(5,8,14,.55); }
 
   /* ---------- 对话恢复提示条 ---------- */
+  /* ---------- 项目功能记忆 ---------- */
+  .memory-bar {
+    margin-top: 6px; font-size: 12px; color: var(--accent);
+    background: rgba(79,140,255,.08); border: 1px solid rgba(79,140,255,.25);
+    border-radius: 8px; padding: 6px 10px; cursor: pointer; line-height: 1.5;
+    max-width: 780px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .memory-bar:hover { border-color: var(--accent); }
+  #memoryDialog .mem-summary { font-size: 13px; line-height: 1.7; color: var(--text); background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  #memoryDialog .mem-update { font-size: 12px; color: var(--muted); border-left: 2px solid var(--border); padding: 4px 10px; margin: 4px 0; }
+
   .chat-resume {
     margin: 10px 22px 0; padding: 8px 14px; border-radius: 8px;
     background: rgba(255,200,87,.1); border: 1px solid rgba(255,200,87,.35);
@@ -363,6 +374,7 @@
           <a id="projectUrl" href="#" target="_blank" rel="noopener">尚未部署</a>
           <button id="btnCopyUrl" class="link-btn hidden">复制</button>
         </div>
+        <div id="projectMemory" class="memory-bar hidden" title="点击查看项目功能记忆与更新记录"></div>
       </div>
       <div class="ws-actions">
         <button id="btnDeploy" class="btn primary">🚀 部署</button>
@@ -478,6 +490,19 @@
   </div>
   <div class="dialog-foot">
     <button id="btnSaveSettings" type="button" class="btn primary">保存设置</button>
+  </div>
+</dialog>
+
+<!-- ================= 项目记忆弹窗 ================= -->
+<dialog id="memoryDialog" class="dialog">
+  <div class="dialog-head">
+    <h3>📝 项目功能记忆</h3>
+    <button id="btnMemoryClose" class="close" aria-label="关闭">✕</button>
+  </div>
+  <div class="dialog-body" style="padding:14px 18px">
+    <div id="memorySummary" class="mem-summary"></div>
+    <h4 style="font-size:13px;color:var(--accent);margin-top:14px">最近需求更新记录</h4>
+    <div id="memoryUpdates" style="margin-top:6px"></div>
   </div>
 </dialog>
 
@@ -736,6 +761,16 @@ function renderProject(p) {
   if (srcBadge) {
     srcBadge.classList.toggle('hidden', p.source !== 'linked');
     srcBadge.textContent = '外部 Worker';
+  }
+  const memBar = $('#projectMemory');
+  if (memBar) {
+    const mem = p.memory && p.memory.summary;
+    if (mem) {
+      memBar.classList.remove('hidden');
+      memBar.textContent = '📝 ' + mem;
+    } else {
+      memBar.classList.add('hidden');
+    }
   }
   const urlEl = $('#projectUrl');
   const copyBtn = $('#btnCopyUrl');
@@ -1466,6 +1501,7 @@ async function openVersions() {
           </span>
         </div>
         <div style="font-size:11px;color:var(--muted)">${time}${ver.url ? ' · ' + esc(ver.url.replace(/^https?:\/\//, '')) : ''}</div>
+        ${ver.memory && ver.memory.summary ? `<div style="font-size:11px;color:var(--accent);margin-top:2px" title="该版本对应的项目记忆">📝 ${esc(ver.memory.summary.slice(0, 50))}</div>` : ''}
         <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
           <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="view" data-v="${ver.v}">查看代码</button>
           <button class="btn ghost" style="font-size:12px;padding:4px 10px" data-act="restore" data-v="${ver.v}">恢复</button>
@@ -1520,6 +1556,28 @@ async function openVersions() {
     });
   } catch (e) { toast(e.message, true); }
 }
+
+function openMemory() {
+  if (!state.project || !state.project.memory) return;
+  $('#memorySummary').textContent = state.project.memory.summary || '（暂无摘要）';
+  const ups = $('#memoryUpdates');
+  ups.innerHTML = '';
+  const updates = state.project.memory.updates || [];
+  if (!updates.length) {
+    ups.innerHTML = '<div class="muted" style="color:var(--muted);font-size:12px">暂无更新记录</div>';
+  } else {
+    updates.slice().reverse().forEach((u) => {
+      const d = document.createElement('div');
+      d.className = 'mem-update';
+      d.textContent = new Date(u.at).toLocaleString() + ' — ' + u.text;
+      ups.appendChild(d);
+    });
+  }
+  $('#memoryDialog').showModal();
+}
+
+$('#projectMemory').addEventListener('click', openMemory);
+$('#btnMemoryClose').addEventListener('click', () => $('#memoryDialog').close());
 
 $('#btnVersions').addEventListener('click', openVersions);
 $('#btnVersionClose').addEventListener('click', () => $('#versionDialog').close());

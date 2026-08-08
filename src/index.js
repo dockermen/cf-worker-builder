@@ -246,6 +246,13 @@ async function handleApi(request, url, env, store) {
       history: [],
       versions: [],
       nextVersion: 1,
+      memory: {
+        summary: body.description
+          ? `项目描述：${String(body.description).trim()}（基础模板，功能随对话完善）`
+          : '基础 Worker 模板（Hello World），尚未实现具体功能。',
+        updates: [],
+        updatedAt: now,
+      },
       createdAt: now,
       updatedAt: now,
     };
@@ -334,9 +341,23 @@ async function handleApi(request, url, env, store) {
       ],
       versions: [],
       nextVersion: 1,
+      memory: { summary: `已关联 Cloudflare Worker：${workerName}`, updates: [], updatedAt: now },
       createdAt: now,
       updatedAt: now,
     };
+    // 用 LLM 分析远程代码，把「当前实现的功能」写入项目记忆（LLM 未配置/失败时降级）
+    try {
+      const analysis = await callChatCompletion(settings, [
+        {
+          role: 'system',
+          content: '你是代码分析器。请用中文要点总结这个 Cloudflare Worker 实现了哪些功能（200 字以内，不要输出代码）。',
+        },
+        { role: 'user', content: String(code || '').slice(0, 4000) },
+      ]);
+      if (analysis) {
+        project.memory = { summary: String(analysis).slice(0, 500), updates: [], updatedAt: now };
+      }
+    } catch (_) { /* 降级保留默认记忆 */ }
     // 探测子域并拼接访问地址
     try {
       const sd = await getAccountSubdomain(cred.token, cred.accountId);
@@ -368,9 +389,10 @@ async function handleApi(request, url, env, store) {
     if (!ver) return json({ error: '版本不存在' }, 404);
     if (method === 'GET') return json({ version: ver });
 
-    // POST：恢复版本（可选立即部署）
+    // POST：恢复版本（可选立即部署），同时恢复该版本对应的项目功能记忆
     const body = await readBody();
     project.code = ver.code;
+    if (ver.memory) project.memory = JSON.parse(JSON.stringify(ver.memory));
     project.updatedAt = Date.now();
     project.history.push({ role: 'system', content: `↩️ 已恢复到版本 #${v}（${ver.note || ''}）` });
     let deployed = false;
@@ -544,6 +566,10 @@ async function chatAction(request, store, id) {
     } catch (_) { /* ignore */ }
   }
 
+  // 部署成功：把本次需求更新到项目功能记忆
+  if (deployed && message) {
+    await updateProjectMemory(store, settings, project, message);
+  }
   await store.saveProject(project);
   await store.clearChatStatus(id);
   return json({ project, reply, code, deployed, url, deployError, testResult, smokeTest });
@@ -733,6 +759,10 @@ async function streamChatAction(request, store, id) {
           } catch (_) { /* ignore */ }
         }
 
+        // 部署成功：把本次需求更新到项目功能记忆
+        if (deployed && message) {
+          await updateProjectMemory(store, settings, cur, message);
+        }
         await store.saveProject(cur);
         await store.clearChatStatus(id);
         send('done', {
@@ -768,6 +798,43 @@ async function streamChatAction(request, store, id) {
       Connection: 'keep-alive',
     },
   });
+}
+
+/**
+ * 更新项目功能记忆：部署成功后把本次需求与功能变更并入项目简介。
+ * 优先用 LLM 整合摘要，失败时降级为只记录需求更新列表。
+ */
+async function updateProjectMemory(store, settings, project, userMessage) {
+  const oldSummary = (project.memory && project.memory.summary) || '（暂无记录）';
+  const prompt = [
+    {
+      role: 'system',
+      content:
+        '你是项目功能文档维护者。请根据「现有项目记忆」与「本次用户新需求」，输出更新后的项目功能简介（中文要点，覆盖所有已实现功能与本次新增改动，300 字以内，不要输出代码）。',
+    },
+    {
+      role: 'user',
+      content: `现有项目记忆：\n${oldSummary}\n\n本次用户新需求：\n${String(userMessage || '').slice(0, 300)}\n\n当前项目代码开头（供参考）：\n${String(project.code || '').slice(0, 1200)}`,
+    },
+  ];
+  try {
+    const summary = await callChatCompletion(settings, prompt);
+    const memory = project.memory || { summary: '', updates: [], updatedAt: 0 };
+    memory.summary = String(summary || '').slice(0, 600);
+    memory.updates = memory.updates || [];
+    memory.updates.push({ at: Date.now(), text: String(userMessage || '').slice(0, 200) });
+    if (memory.updates.length > 20) memory.updates = memory.updates.slice(-20);
+    memory.updatedAt = Date.now();
+    project.memory = memory;
+  } catch (_) {
+    // 降级：LLM 不可用时至少记录需求
+    const memory = project.memory || { summary: '', updates: [], updatedAt: 0 };
+    memory.updates = memory.updates || [];
+    memory.updates.push({ at: Date.now(), text: String(userMessage || '').slice(0, 200) });
+    if (memory.updates.length > 20) memory.updates = memory.updates.slice(-20);
+    memory.updatedAt = Date.now();
+    project.memory = memory;
+  }
 }
 
 /** 上下文参数：早期对话压缩后只保留最近 N 条完整消息 */

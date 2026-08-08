@@ -100,6 +100,7 @@ export function pushVersion(project, note, url) {
     url: url || project.url || '',
     deployed: !!url,
     tagged: false, // 打 tag 的版本永久保留，不受上限限制
+    memory: project.memory ? JSON.parse(JSON.stringify(project.memory)) : null, // 快照当时的项目功能记忆
     createdAt: Date.now(),
   });
   // 上限策略：仅清理「未打 tag」的最旧版本，tagged 版本永久保留
