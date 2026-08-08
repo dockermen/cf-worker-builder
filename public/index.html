@@ -528,13 +528,18 @@
       </label>
     </div>
     <div id="importForm" class="hidden">
-      <label>已有 Worker 名称
+      <label>选择已有 Worker
+        <select id="impWorkerSelect" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 12px;font-size:13px;outline:none">
+          <option value="">加载中…</option>
+        </select>
+      </label>
+      <label>或手动输入 Worker 名称
         <input id="impWorkerName" placeholder="例如：my-worker（Cloudflare 中的脚本名）" />
       </label>
       <label>项目名称（可选）
         <input id="impName" placeholder="留空则使用 Worker 名称" />
       </label>
-      <p class="hint">关联后可在对话框中描述需求修改该 Worker，修改后自动部署覆盖；删除该项目只会移除本地记录，<b>不会删除远程 Worker</b>。</p>
+      <p class="hint">关联后可在对话框中描述需求修改该 Worker，修改后自动部署覆盖；删除该项目只会移除本地记录，<b>绝对不会删除远程 Worker</b>。</p>
     </div>
   </div>
   <div class="dialog-foot">
@@ -1262,18 +1267,44 @@ $('#tabCreate').addEventListener('click', () => {
   $('#btnImportProject').classList.add('hidden');
 });
 
-$('#tabImport').addEventListener('click', () => {
+$('#tabImport').addEventListener('click', async () => {
   $('#tabCreate').classList.remove('active');
   $('#tabImport').classList.add('active');
   $('#createForm').classList.add('hidden');
   $('#importForm').classList.remove('hidden');
   $('#btnCreateProject').classList.add('hidden');
   $('#btnImportProject').classList.remove('hidden');
+  await loadWorkerList();
 });
 
+async function loadWorkerList() {
+  const sel = $('#impWorkerSelect');
+  if (!sel || sel.dataset.loaded === '1') return;
+  sel.innerHTML = '<option value="">加载中…</option>';
+  try {
+    const r = await api('/api/workers/list');
+    sel.dataset.loaded = '1';
+    if (!r.workers || !r.workers.length) {
+      sel.innerHTML = '<option value="">（账号下暂无 Worker，可手动输入）</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">请选择 Worker…</option>';
+    r.workers.forEach((w) => {
+      const opt = document.createElement('option');
+      opt.value = w.name;
+      const date = w.modifiedOn ? ' · ' + w.modifiedOn.slice(0, 10) : '';
+      opt.textContent = w.name + date;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    sel.innerHTML = `<option value="">加载失败：${esc(e.message)}</option>`;
+    toast(e.message, true);
+  }
+}
+
 $('#btnImportProject').addEventListener('click', async () => {
-  const workerName = $('#impWorkerName').value.trim();
-  if (!workerName) { toast('请输入要关联的 Worker 名称', true); return; }
+  const workerName = $('#impWorkerSelect').value || $('#impWorkerName').value.trim();
+  if (!workerName) { toast('请选择或输入要关联的 Worker 名称', true); return; }
   try {
     const res = await api('/api/projects/import', {
       method: 'POST',

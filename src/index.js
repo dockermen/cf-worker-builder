@@ -22,7 +22,7 @@ import {
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
 import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult } from './tools.js';
-import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode } from './deploy.js';
+import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode, listWorkers } from './deploy.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -283,6 +283,23 @@ async function handleApi(request, url, env, store) {
     }
   }
 
+  // ============ 列出账号下已有 Worker（关联下拉选择） ============
+  if (pathname === '/api/workers/list' && method === 'GET') {
+    const settings = await store.getSettings();
+    let cred;
+    try {
+      cred = await getCredentials(store, settings);
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+    try {
+      const workers = await listWorkers(cred.token, cred.accountId);
+      return json({ workers });
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+  }
+
   // ============ 关联已有 Cloudflare Worker ============
   if (pathname === '/api/projects/import' && method === 'POST') {
     const body = await readBody();
@@ -470,7 +487,7 @@ async function chatAction(request, store, id) {
     project.code = code;
     if (body.autoDeploy !== false) {
       try {
-        const r = await doDeploy(store, settings, project, '对话生成并部署');
+        const r = await doDeploy(store, settings, project, message.slice(0, 40) || '对话生成并部署');
         deployed = true;
         url = r.url;
         project.url = r.url;
@@ -655,7 +672,7 @@ async function streamChatAction(request, store, id) {
           cur.code = code;
           if (body.autoDeploy !== false) {
             try {
-              const r = await doDeploy(store, settings, cur, '对话生成并部署');
+              const r = await doDeploy(store, settings, cur, message.slice(0, 40) || '对话生成并部署');
               deployed = true;
               url = r.url;
               cur.url = r.url;

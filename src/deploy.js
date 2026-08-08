@@ -152,3 +152,22 @@ export async function fetchWorkerCode(cfToken, accountId, scriptName) {
   }
   return { code, mainModule, isModule: /export\s+default/.test(code) };
 }
+
+/** 列出账号下已有 Worker 脚本（用于「关联已有 Worker」下拉选择） */
+export async function listWorkers(cfToken, accountId) {
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts?per_page=100`,
+    { headers: { Authorization: `Bearer ${cfToken}` } }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) {
+    throw new Error(
+      `获取 Worker 列表失败（${res.status}）：${JSON.stringify(data.errors || data).slice(0, 200)}`
+    );
+  }
+  return (data.result || []).map((w) => ({
+    name: w.id,
+    createdOn: w.created_on || '',
+    modifiedOn: w.modified_on || '',
+  }));
+}
