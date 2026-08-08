@@ -257,9 +257,57 @@
   /* ---------- 项目来源徽章 ---------- */
   .badge-link { font-size: 10px; color: var(--yellow); background: rgba(255,200,87,.12); border: 1px solid rgba(255,200,87,.35); border-radius: 4px; padding: 1px 5px; font-weight: 600; }
 
+  /* ---------- 侧边栏折叠（桌面：收起靠左；移动：抽屉式） ---------- */
+  body { overflow-x: hidden; }
+  .sidebar { transition: margin-left .25s ease, transform .25s ease; }
+  body:not(.sidebar-open) .sidebar { margin-left: -264px; }
+  #sidebarToggle {
+    display: none; align-items: center; justify-content: center;
+    position: fixed; top: 12px; left: 12px; z-index: 150;
+    width: 36px; height: 36px; border-radius: 8px; font-size: 16px;
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  }
+  #sidebarToggle:hover { border-color: var(--accent); color: var(--accent); }
+  body:not(.sidebar-open) #sidebarToggle { display: flex; }
+  #sidebarOverlay { display: none; position: fixed; inset: 0; z-index: 90; background: rgba(5,8,14,.55); }
+
+  /* ---------- 对话恢复提示条 ---------- */
+  .chat-resume {
+    margin: 10px 22px 0; padding: 8px 14px; border-radius: 8px;
+    background: rgba(255,200,87,.1); border: 1px solid rgba(255,200,87,.35);
+    color: var(--yellow); font-size: 12.5px;
+  }
+  .chat-resume.ok { background: rgba(61,220,151,.1); border-color: rgba(61,220,151,.35); color: var(--green); }
+
+  /* ---------- 移动端适配 ---------- */
   @media (max-width: 760px) {
-    .sidebar { width: 200px; min-width: 200px; }
-    .ws-header { flex-direction: column; align-items: flex-start; }
+    .sidebar {
+      position: fixed; top: 0; bottom: 0; left: 0; width: 264px; min-width: 264px;
+      z-index: 100; margin-left: 0 !important; transform: translateX(-100%);
+      box-shadow: 12px 0 40px rgba(0,0,0,.4);
+    }
+    body.sidebar-open .sidebar { transform: translateX(0); }
+    body.sidebar-open #sidebarOverlay { display: block; }
+    #sidebarToggle { display: flex; }
+
+    .ws-header { flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 14px; }
+    .ws-header h2 { font-size: 15px; }
+    .ws-actions { width: 100%; }
+    .ws-actions .btn { flex: 1; padding: 7px 6px; font-size: 12px; }
+    .messages { padding: 14px; }
+    .msg { font-size: 13.5px; max-width: 96%; }
+    .composer { padding: 10px 12px 12px; }
+    .composer textarea { font-size: 14px; }
+    .composer-bar { flex-direction: column; align-items: stretch; gap: 8px; }
+    .composer-bar .btn { width: 100%; }
+    .dialog { width: 94vw; }
+    .dialog-body { padding: 14px; }
+    .empty { padding: 24px 16px; }
+    .empty h2 { font-size: 20px; }
+    .steps { flex-direction: column; align-items: center; }
+    .step { width: 100%; max-width: 320px; }
+    .code-editor { font-size: 12px; padding: 12px; }
+    .chat-resume { margin: 8px 14px 0; }
   }
 </style>
 </head>
@@ -324,6 +372,7 @@
 
     <!-- 对话视图 -->
     <div id="chatView" class="view">
+      <div id="chatResume" class="chat-resume hidden"></div>
       <div id="messages" class="messages"></div>
       <div class="composer">
         <textarea id="input" rows="3"
@@ -480,6 +529,9 @@
     <button id="btnImportProject" type="button" class="btn primary hidden">关联 Worker</button>
   </div>
 </dialog>
+
+<button id="sidebarToggle" aria-label="展开项目列表">☰</button>
+<div id="sidebarOverlay"></div>
 
 <div id="lockScreen" class="lock hidden">
   <div class="lock-box">
@@ -649,6 +701,7 @@ async function openProject(id) {
     $('#workspace').classList.remove('hidden');
     renderProject(data.project);
     renderSidebar();
+    watchChatStatus(id);
   } catch (err) { toast(err.message, true); }
 }
 
@@ -759,23 +812,77 @@ async function sendMessage() {
   box.appendChild(userDiv);
   const typing = document.createElement('div');
   typing.className = 'msg assistant typing';
-  typing.textContent = '🤖 正在思考并生成代码…（模型响应可能需要 1-2 分钟，请耐心等待，最长 2 分钟会自动超时提示）';
+  typing.textContent = '🤖 正在思考并生成代码…（模型响应可能需要 1-2 分钟，请耐心等待）';
   box.appendChild(typing);
   scrollBottom();
 
+  let assistantEl = null;
+  let fullText = '';
   try {
-    const res = await api(`/api/projects/${state.project.id}/chat`, {
+    // SSE 流式对话
+    const res = await fetch(`/api/projects/${state.project.id}/chat/stream`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),
+      },
       body: JSON.stringify({ message: text, autoDeploy: $('#autoDeploy').checked }),
     });
-    state.project = res.project;
-    renderProject(res.project);
-    renderSidebar();
-    if (res.deployed) toast('✅ 已自动部署：' + res.url);
-    else if (res.deployError) toast('⚠️ 部署失败：' + res.deployError, true);
+    if (res.status === 401) {
+      showLockScreen();
+      throw new Error('登录状态已失效，请重新输入访问密码');
+    }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `请求失败（${res.status}）`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const raw = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        let event = 'message';
+        let data = '';
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        let payload;
+        try { payload = JSON.parse(data); } catch { continue; }
+
+        if (event === 'delta') {
+          if (!assistantEl) {
+            typing.remove();
+            assistantEl = document.createElement('div');
+            assistantEl.className = 'msg assistant streaming';
+            box.appendChild(assistantEl);
+          }
+          fullText += payload.text || '';
+          assistantEl.textContent = fullText;
+          scrollBottom();
+        } else if (event === 'done') {
+          typing.remove();
+          state.project = payload.project;
+          renderProject(payload.project);
+          renderSidebar();
+          if (payload.deployed) toast('✅ 已自动部署：' + payload.url);
+          else if (payload.deployError) toast('⚠️ 部署失败：' + payload.deployError, true);
+        } else if (event === 'error') {
+          throw new Error(payload.error || '对话出错');
+        }
+      }
+    }
   } catch (err) {
     typing.remove();
-    userDiv.remove();
+    if (assistantEl) assistantEl.remove();
     input.value = text;
     autoGrow();
     toast(err.message, true);
@@ -805,6 +912,75 @@ async function deployCurrent() {
     btn.disabled = false;
     btn.textContent = old;
   }
+}
+
+/* ---------------- 侧边栏折叠 ---------------- */
+
+function applySidebarState() {
+  const stored = localStorage.getItem('sidebar_open');
+  const isMobile = window.innerWidth <= 760;
+  if (isMobile) {
+    // 移动端默认收起，除非用户主动打开过
+    document.body.classList.toggle('sidebar-open', stored === '1');
+  } else {
+    // 桌面端默认展开
+    document.body.classList.toggle('sidebar-open', stored !== '0');
+  }
+}
+
+function setSidebar(open) {
+  document.body.classList.toggle('sidebar-open', open);
+  localStorage.setItem('sidebar_open', open ? '1' : '0');
+}
+
+function toggleSidebar() {
+  setSidebar(!document.body.classList.contains('sidebar-open'));
+}
+
+/* ---------------- 对话恢复提示 ---------------- */
+
+function showChatResume(text, isOk = false) {
+  const bar = $('#chatResume');
+  if (!bar) return;
+  bar.textContent = text;
+  bar.className = 'chat-resume' + (isOk ? ' ok' : '');
+}
+
+function hideChatResume() {
+  const bar = $('#chatResume');
+  if (bar) bar.className = 'chat-resume hidden';
+}
+
+async function watchChatStatus(id) {
+  if (state.chatWatch) { clearInterval(state.chatWatch); state.chatWatch = null; }
+  try {
+    const r = await api(`/api/projects/${id}/chat-status`);
+    if (!r.status) { hideChatResume(); return; }
+    const started = r.status.startedAt || Date.now();
+    const stale = Date.now() - started > 60000;
+    if (r.status.status === 'running' && !stale) {
+      showChatResume('⏳ 该项目的对话仍在生成中，离开页面后结果会自动保存，稍候将自动刷新…');
+      state.chatWatch = setInterval(async () => {
+        try {
+          const r2 = await api(`/api/projects/${id}/chat-status`);
+          if (!r2.status) {
+            clearInterval(state.chatWatch);
+            state.chatWatch = null;
+            hideChatResume();
+            // 状态消失 = 对话完成或中断：重新拉取项目刷新记录
+            const d = await api(`/api/projects/${id}`);
+            if (state.project && state.project.id === id) {
+              state.project = d.project;
+              renderProject(d.project);
+            }
+            toast('💬 对话已更新');
+          }
+        } catch (_) { /* ignore */ }
+      }, 3000);
+    } else if (r.status.status === 'running') {
+      showChatResume('⚠️ 上次对话可能已中断（超时），可重新发送消息；已发送的内容会保留在记录中');
+    }
+  } catch (_) { /* ignore */ }
 }
 
 /* ---------------- 视图切换 ---------------- */
@@ -1061,6 +1237,15 @@ $('#btnChangePwd').addEventListener('click', async () => {
 });
 
 $('#btnLockLogin').addEventListener('click', doLockLogin);
+
+$('#sidebarToggle').addEventListener('click', toggleSidebar);
+$('#sidebarOverlay').addEventListener('click', () => setSidebar(false));
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 760 && !document.body.classList.contains('sidebar-open')) {
+    // 桌面端恢复展开
+    setSidebar(true);
+  }
+});
 $('#lockPassword').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') doLockLogin();
 });
@@ -1169,6 +1354,7 @@ async function initApp() {
 
 (async function init() {
   state.token = localStorage.getItem('builder_token') || '';
+  applySidebarState();
   try {
     const r = await api('/api/auth/check');
     if (r.authed) {

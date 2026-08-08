@@ -10,7 +10,7 @@
 
 import { json, slugify, extractCode, maskKey, DEFAULT_CODE } from './util.js';
 import { makeStore } from './store.js';
-import { callChatCompletion, SYSTEM_PROMPT } from './agent.js';
+import { callChatCompletion, streamChatCompletion, SYSTEM_PROMPT } from './agent.js';
 import {
   getClientId,
   startDeviceFlow,
@@ -326,14 +326,24 @@ async function handleApi(request, url, env, store) {
     return json({ project });
   }
 
-  // ============ 项目子操作：chat / deploy / code / clear ============
-  const actionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/(chat|deploy|code|clear)$/);
+  // ============ 对话进行中状态查询 ============
+  const statusMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status$/);
+  if (statusMatch && method === 'GET') {
+    const status = await store.getChatStatus(statusMatch[1]);
+    return json({ status });
+  }
+
+  // ============ 项目子操作：chat / chat/stream / deploy / code / clear ============
+  const actionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/(chat(?:\/stream)?|deploy|code|clear)$/);
   if (actionMatch) {
     const id = actionMatch[1];
     const action = actionMatch[2];
 
     if (action === 'chat' && method === 'POST') {
       return await chatAction(request, store, id);
+    }
+    if (action === 'chat/stream' && method === 'POST') {
+      return await streamChatAction(request, store, id);
     }
     if (action === 'deploy' && method === 'POST') {
       return await deployAction(store, id);
@@ -376,8 +386,13 @@ async function chatAction(request, store, id) {
     return json({ error: '请先在「设置」中配置 OpenAI Base URL、Key 和模型' }, 400);
   }
 
-  // 追加用户消息
+  // 追加用户消息（立即持久化：即使后续失败，切换页面后记录也不会丢失）
+  const lastMsg = project.history[project.history.length - 1];
+  if (lastMsg && lastMsg.role === 'user' && lastMsg.content === message) {
+    project.history.pop(); // 上次失败重试去重
+  }
   project.history.push({ role: 'user', content: message });
+  await store.saveProject(project);
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -388,8 +403,10 @@ async function chatAction(request, store, id) {
   try {
     reply = await callChatCompletion(settings, messages);
   } catch (e) {
-    // 调用失败时回滚用户消息，避免重试产生重复
-    project.history.pop();
+    // 保留用户消息，并记录失败原因（便于切换页面后看到）
+    project.history.push({ role: 'system', content: `⚠️ 对话调用失败：${e.message}` });
+    project.updatedAt = Date.now();
+    await store.saveProject(project);
     return json({ error: e.message }, 502);
   }
 
@@ -425,6 +442,148 @@ async function chatAction(request, store, id) {
 
   await store.saveProject(project);
   return json({ project, reply, code, deployed, url, deployError });
+}
+
+/**
+ * 流式对话：SSE 逐字输出，结束时提取代码并自动部署
+ * 事件：delta（增量文本）/ done（{reply, code, deployed, url, deployError, project}）/ error（{error}）
+ */
+async function streamChatAction(request, store, id) {
+  const project = await store.getProject(id);
+  if (!project) return json({ error: '项目不存在' }, 404);
+
+  const body = await request.json().catch(() => ({}));
+  const message = String(body.message || '').trim();
+  if (!message) return json({ error: '消息不能为空' }, 400);
+
+  const settings = await store.getSettings();
+  if (!settings.openaiBaseUrl || !settings.openaiKey || !settings.openaiModel) {
+    return json({ error: '请先在「设置」中配置 OpenAI Base URL、Key 和模型' }, 400);
+  }
+
+  // 用户消息立即持久化（重试去重）
+  const lastMsg = project.history[project.history.length - 1];
+  if (lastMsg && lastMsg.role === 'user' && lastMsg.content === message) {
+    project.history.pop();
+  }
+  project.history.push({ role: 'user', content: message });
+  project.updatedAt = Date.now();
+  await store.saveProject(project);
+  await store.setChatStatus(id, { status: 'running', startedAt: Date.now() });
+
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...project.history.slice(-40),
+  ];
+
+  let llm;
+  try {
+    llm = await streamChatCompletion(settings, messages);
+  } catch (e) {
+    project.history.push({ role: 'system', content: `⚠️ 对话调用失败：${e.message}` });
+    await store.saveProject(project);
+    await store.clearChatStatus(id);
+    return json({ error: e.message }, 502);
+  }
+
+  const { response: llmRes, isResponses } = llm;
+  const reader = llmRes.body.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = '';
+  let fullText = '';
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event, data) => {
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            for (const line of chunk.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              const dataStr = line.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+              let evt;
+              try { evt = JSON.parse(dataStr); } catch { continue; }
+              let delta = '';
+              if (isResponses) {
+                if (evt.type === 'output_text.delta') delta = evt.delta || '';
+              } else if (evt.choices && evt.choices[0] && evt.choices[0].delta) {
+                delta = evt.choices[0].delta.content || '';
+              }
+              if (delta) {
+                fullText += delta;
+                send('delta', { text: delta });
+              }
+            }
+          }
+        }
+
+        // 流结束：保存回复 → 提取代码 → 自动部署
+        const cur = await store.getProject(id);
+        cur.history.push({ role: 'assistant', content: fullText });
+        cur.updatedAt = Date.now();
+        let deployed = false;
+        let url = cur.url || '';
+        let deployError = null;
+        const code = extractCode(fullText);
+        if (code) {
+          cur.code = code;
+          if (body.autoDeploy !== false) {
+            try {
+              const r = await doDeploy(store, settings, cur);
+              deployed = true;
+              url = r.url;
+              cur.url = r.url;
+              cur.deployed = true;
+              cur.deployedAt = Date.now();
+              cur.history.push({ role: 'system', content: `✅ 已自动部署到：${r.url}` });
+            } catch (e) {
+              deployError = e.message;
+              cur.history.push({
+                role: 'system',
+                content: `⚠️ 代码已生成，但自动部署失败：${e.message}（可稍后在「代码」页手动重新部署）`,
+              });
+            }
+          }
+        }
+        await store.saveProject(cur);
+        await store.clearChatStatus(id);
+        send('done', { reply: fullText, code, deployed, url, deployError, project: cur });
+        controller.close();
+      } catch (e) {
+        // 中断：保留已生成内容（若有）并记录错误
+        try {
+          const cur = await store.getProject(id);
+          if (fullText.trim()) {
+            cur.history.push({ role: 'assistant', content: fullText });
+          }
+          cur.history.push({ role: 'system', content: `⚠️ 对话中断：${e.message}` });
+          cur.updatedAt = Date.now();
+          await store.saveProject(cur);
+        } catch (_) { /* ignore */ }
+        await store.clearChatStatus(id);
+        send('error', { error: e.message });
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+    },
+  });
 }
 
 /** 手动部署当前代码 */

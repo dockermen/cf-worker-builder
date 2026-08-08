@@ -61,7 +61,22 @@ export function makeStore(kv) {
       await this.saveProjectList(list.filter((p) => p.id !== id));
     },
 
-    // ============ 访问密码与登录会话 ============
+    // ============ 对话进行中状态（用于页面切换后恢复提示） ============
+
+  async getChatStatus(id) {
+    const raw = await kv.get(`chat_status:${id}`, 'json');
+    return raw || null;
+  },
+
+  async setChatStatus(id, status) {
+    await kv.put(`chat_status:${id}`, JSON.stringify(status), { expirationTtl: 900 });
+  },
+
+  async clearChatStatus(id) {
+    await kv.delete(`chat_status:${id}`);
+  },
+
+  // ============ 访问密码与登录会话 ============
 
   async getAccessConfig() {
     const raw = await kv.get('access_config', 'json');

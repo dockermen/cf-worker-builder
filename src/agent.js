@@ -112,6 +112,38 @@ async function callResponsesApi(base, settings, messages) {
   return content;
 }
 
+/**
+ * 流式调用大模型（SSE），支持 chat/completions 与 responses
+ * @returns {{response:Response, isResponses:boolean}}
+ */
+export async function streamChatCompletion(settings, messages) {
+  const base = normalizeBaseUrl(settings.openaiBaseUrl);
+  const isResponses = settings.openaiApiType === 'responses';
+  const url = isResponses ? `${base}/responses` : `${base}/chat/completions`;
+  const body = isResponses
+    ? { model: settings.openaiModel, input: messages, stream: true }
+    : { model: settings.openaiModel, messages, stream: true, temperature: 0.4, max_tokens: 8192 };
+
+  // 超时仅覆盖「建立连接/首字节」阶段，不限制后续流式读取
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.openaiKey}`,
+      },
+      body: JSON.stringify(body),
+    },
+    60000
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`大模型调用失败（HTTP ${res.status}）：${text.slice(0, 400)}`);
+  }
+  return { response: res, isResponses };
+}
+
 /** 从 Responses API 响应中提取最终文本 */
 function extractResponsesText(data) {
   const output = data?.output || [];
