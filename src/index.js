@@ -60,6 +60,7 @@ async function handleApi(request, url, env, store) {
       settings: {
         openaiBaseUrl: settings.openaiBaseUrl || '',
         openaiModel: settings.openaiModel || '',
+        openaiApiType: settings.openaiApiType || 'chat',
         openaiKeyMasked: maskKey(settings.openaiKey),
         hasOpenAIKey: !!settings.openaiKey,
         cfTokenMasked: maskKey(settings.cfToken),
@@ -80,6 +81,8 @@ async function handleApi(request, url, env, store) {
       openaiBaseUrl: String(body.openaiBaseUrl || '').trim() || settings.openaiBaseUrl || '',
       openaiKey: String(body.openaiKey || '').trim() || settings.openaiKey || '',
       openaiModel: String(body.openaiModel || '').trim() || settings.openaiModel || '',
+      openaiApiType:
+        body.openaiApiType === 'responses' ? 'responses' : settings.openaiApiType === 'responses' ? 'responses' : 'chat',
       cfToken: String(body.cfToken || '').trim() || settings.cfToken || '',
       cfAccountId: String(body.cfAccountId || '').trim() || settings.cfAccountId || '',
       cfSubdomain: settings.cfSubdomain || '',
@@ -107,6 +110,7 @@ async function handleApi(request, url, env, store) {
       settings: {
         openaiBaseUrl: next.openaiBaseUrl,
         openaiModel: next.openaiModel,
+        openaiApiType: next.openaiApiType,
         openaiKeyMasked: maskKey(next.openaiKey),
         hasOpenAIKey: !!next.openaiKey,
         cfTokenMasked: maskKey(next.cfToken),

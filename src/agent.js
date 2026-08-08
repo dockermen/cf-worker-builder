@@ -26,15 +26,25 @@ export const SYSTEM_PROMPT = `你是「Worker 在线构建器」的智能体，�
 2. 用户要求修改功能时，输出修改后的「完整」代码（不要输出 diff、省略号或占位注释）。
 3. 如果用户只是提问、不涉及代码改动，正常回答即可，不要输出代码块。`;
 /**
- * 调用 OpenAI 兼容 chat/completions
- * @param {{openaiBaseUrl:string, openaiKey:string, openaiModel:string}} settings
+ * 调用大模型，支持两种 OpenAI 兼容接口类型：
+ * - chat（默认）：POST {base}/chat/completions，兼容 DeepSeek / OpenAI / Moonshot 等
+ * - responses：POST {base}/responses（OpenAI Responses API，部分网关/模型使用）
+ * @param {{openaiBaseUrl:string, openaiKey:string, openaiModel:string, openaiApiType?:'chat'|'responses'}} settings
  * @param {Array<{role:string, content:string}>} messages
  */
 export async function callChatCompletion(settings, messages) {
   const base = normalizeBaseUrl(settings.openaiBaseUrl);
-  const url = `${base}/chat/completions`;
+  const isResponses = settings.openaiApiType === 'responses';
 
-  const res = await fetch(url, {
+  if (isResponses) {
+    return await callResponsesApi(base, settings, messages);
+  }
+  return await callChatCompletionsApi(base, settings, messages);
+}
+
+/** POST {base}/chat/completions */
+async function callChatCompletionsApi(base, settings, messages) {
+  const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -58,4 +68,41 @@ export async function callChatCompletion(settings, messages) {
   const content = data?.choices?.[0]?.message?.content;
   if (!content) throw new Error('大模型返回内容为空');
   return content;
+}
+
+/** POST {base}/responses（OpenAI Responses API） */
+async function callResponsesApi(base, settings, messages) {
+  const res = await fetch(`${base}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.openaiKey}`,
+    },
+    body: JSON.stringify({
+      model: settings.openaiModel,
+      input: messages,
+      stream: false,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`大模型调用失败（HTTP ${res.status}）：${text.slice(0, 400)}`);
+  }
+
+  const data = await res.json();
+  const content = extractResponsesText(data);
+  if (!content) throw new Error('大模型返回内容为空');
+  return content;
+}
+
+/** 从 Responses API 响应中提取最终文本 */
+function extractResponsesText(data) {
+  const output = data?.output || [];
+  const parts = output
+    .filter((o) => o && o.type === 'message')
+    .flatMap((o) => o.content || [])
+    .filter((c) => c && (c.type === 'output_text' || c.type === 'text'))
+    .map((c) => c.text || '');
+  return parts.join('\n');
 }

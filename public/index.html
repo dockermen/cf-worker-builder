@@ -360,6 +360,12 @@
         <option value="glm-4-flash"></option>
       </datalist>
     </label>
+    <label>接口类型
+      <select id="setApiType" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 12px;font-size:13px;outline:none">
+        <option value="chat">chat/completions（兼容 DeepSeek 等，默认）</option>
+        <option value="responses">responses（OpenAI Responses API）</option>
+      </select>
+    </label>
 
     <h4>② Cloudflare（自动发布 Worker）</h4>
     <div class="oauth-card">
@@ -711,6 +717,7 @@ function openSettings() {
   $('#setKey').value = '';
   $('#setKey').placeholder = s.hasOpenAIKey ? `已保存：${s.openaiKeyMasked}（留空则保持不变）` : 'sk-...';
   $('#setModel').value = s.openaiModel || '';
+  $('#setApiType').value = s.openaiApiType || 'chat';
   $('#setCfToken').value = '';
   $('#setCfToken').placeholder = s.hasCfToken ? `已保存：${s.cfTokenMasked}（留空则保持不变）` : 'Cloudflare API Token';
   $('#setAccountId').value = s.cfAccountId || '';
@@ -827,6 +834,7 @@ async function saveSettings() {
     openaiBaseUrl: $('#setBaseUrl').value.trim(),
     openaiKey: $('#setKey').value.trim(),
     openaiModel: $('#setModel').value.trim(),
+    openaiApiType: $('#setApiType').value,
     cfToken: $('#setCfToken').value.trim(),
     cfAccountId: $('#setAccountId').value.trim(),
   };
