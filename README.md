@@ -170,6 +170,9 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-08**：v1.9.2 修复代码提取误吞工具块
+  - extractCode 跳过 test-http/curl/markdown 等工具块，仅提取具备 Worker 特征（export default 或 fetch 监听）的代码块，防止项目代码被改成无关内容
+  - deployWorker 部署前校验代码合法性，无效代码明确报错取消部署（避免 10021 multipart 错误）
 - **2026-08-08**：v1.9.1 代理类 Worker 最佳实践
   - 提示词：反向代理默认转发所有路径并透传状态码；转发请求头时只保留必要头，清理 cf-connecting-ip / x-forwarded-for 等 CF 注入头（目标站常据此反爬返回 404/403）
   - 提示词：测试自建 worker（xxx.workers.dev）返回 404 时，先用 test-http 直连目标站同路径对比诊断，避免盲试
