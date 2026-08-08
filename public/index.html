@@ -160,6 +160,9 @@
   .msg .copy-btn { background: none; border: 1px solid var(--border); color: var(--muted); font-size: 11px; border-radius: 6px; padding: 2px 8px; }
   .msg .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
   .msg pre { padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
+  .msg .codeblock pre { max-height: 280px; overflow: auto; }
+  .msg .codeblock.collapsed pre { display: none; }
+  .msg .codehead { cursor: pointer; user-select: none; }
   .msg pre code { font-family: var(--mono); color: #c9d4e8; white-space: pre; }
   .msg code { font-family: var(--mono); font-size: 12.5px; background: rgba(139,147,167,.15); border-radius: 4px; padding: 1px 5px; }
   .msg.typing { color: var(--muted); font-size: 13px; }
@@ -759,7 +762,7 @@ function renderMarkdown(text) {
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 1) {
       let code = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
-      html += `<div class="codeblock"><div class="codehead"><span>代码</span>
+      html += `<div class="codeblock collapsed"><div class="codehead"><span>📄 代码（点击展开/折叠）</span>
         <button type="button" class="copy-btn" data-code="${encodeURIComponent(code)}">复制</button></div>
         <pre><code>${esc(code)}</code></pre></div>`;
     } else {
@@ -770,6 +773,26 @@ function renderMarkdown(text) {
     }
   }
   return html;
+}
+
+/** 流式渲染：文本与代码块分段展示，代码块展开并自动滚动到最新行 */
+function renderStreaming(text) {
+  const parts = String(text).split(/```/);
+  let html = '';
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      let code = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
+      html += `<div class="codeblock"><div class="codehead"><span>🧠 代码（点击折叠）</span></div><pre class="code-scroll"><code>${esc(code)}</code></pre></div>`;
+    } else {
+      html += esc(parts[i]).replace(/\n/g, '<br/>');
+    }
+  }
+  return html;
+}
+
+function scrollCodeLatest(root) {
+  const pre = root && root.querySelector('.code-scroll');
+  if (pre) pre.scrollTop = pre.scrollHeight; // 滚动显示最新一行
 }
 
 function renderMessages(history) {
@@ -887,7 +910,8 @@ async function sendMessage() {
             box.appendChild(assistantEl);
           }
           fullText += payload.text || '';
-          assistantEl.textContent = fullText;
+          assistantEl.innerHTML = renderStreaming(fullText);
+          scrollCodeLatest(assistantEl); // 代码块滚动到最新行
           scrollBottom();
         } else if (event === 'tool') {
           // 工具执行完成：结束当前内容段，显示工具摘要；后续 delta 会新建内容段
@@ -1525,6 +1549,14 @@ $('#btnSaveDeploy').addEventListener('click', async () => {
     });
     await deployCurrent();
   } catch (err) { toast(err.message, true); }
+});
+
+// 代码块点击标题折叠/展开（事件委托）
+document.addEventListener('click', (e) => {
+  const head = e.target.closest('.codehead');
+  if (head && !e.target.closest('.copy-btn')) {
+    head.parentElement.classList.toggle('collapsed');
+  }
 });
 
 // 复制代码块（事件委托）

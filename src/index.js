@@ -475,6 +475,7 @@ async function chatAction(request, store, id) {
   await store.saveProject(project);
 
   await store.setChatStatus(id, { status: 'running', startedAt: Date.now(), stage: 'thinking', round: 1, note: '正在思考…', updatedAt: Date.now() });
+  await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
   const messages = buildMessages(project);
 
   let reply;
@@ -568,6 +569,7 @@ async function streamChatAction(request, store, id) {
   await store.saveProject(project);
   await store.setChatStatus(id, { status: 'running', startedAt: Date.now() });
 
+  await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
   let messages = buildMessages(project);
 
   const encoder = new TextEncoder();
@@ -752,9 +754,14 @@ async function streamChatAction(request, store, id) {
   });
 }
 
-/** 组装 LLM 上下文：系统提示词 + 当前项目代码 + 历史（长会话锚定当前代码状态） */
+/** 上下文参数：早期对话压缩后只保留最近 N 条完整消息 */
+const CONTEXT_KEEP = 20;
+const COMPACT_THRESHOLD = 35;
+
+/** 组装 LLM 上下文：系统提示词 + 当前项目代码 + 历史（长会话锚定当前代码状态，支持压缩摘要） */
 function buildMessages(project) {
-  return [
+  const history = project.history || [];
+  const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     {
       role: 'system',
@@ -763,8 +770,51 @@ function buildMessages(project) {
 ${project.code || '(暂无代码)'}
 \`\`\``,
     },
-    ...(project.history || []).slice(-40),
   ];
+  if (project.compacted && project.compacted.summary) {
+    // 早期对话已压缩为摘要，保留要点；最近消息完整保留
+    messages.push({
+      role: 'system',
+      content: `以下是更早对话的压缩摘要（约 ${project.compacted.count || 0} 条消息，请始终遵守其中的用户需求与已完成/遗留事项）：\n${project.compacted.summary}`,
+    });
+    messages.push(...history.slice(-CONTEXT_KEEP));
+  } else {
+    messages.push(...history.slice(-40));
+  }
+  return messages;
+}
+
+/**
+ * 上下文压缩：历史消息过多时，把早期消息交给 LLM 生成要点摘要存入 project.compacted。
+ * history 本身完整保留（供 UI 展示），仅 LLM 上下文使用压缩版，防止长对话遗忘早期需求。
+ */
+async function maybeCompact(store, settings, project) {
+  const history = project.history || [];
+  if (history.length <= COMPACT_THRESHOLD) return false;
+  const old = history.slice(0, history.length - CONTEXT_KEEP);
+  if (!old.length) return false;
+  const text = old
+    .map((m) => `[${m.role}] ${String(m.content || '').slice(0, 300)}`)
+    .join('\n')
+    .slice(0, 8000);
+  const summaryPrompt = [
+    {
+      role: 'system',
+      content:
+        '你是一个对话摘要器。请把下面的对话压缩成中文要点摘要，必须保留：1) 用户的核心需求与约束（尤其早期提过、后续容易遗忘的需求）；2) 已完成的功能与改动（解决了哪些问题）；3) 当前代码状态；4) 待办/遗留问题。不要输出代码，控制在 250 字以内。',
+    },
+    { role: 'user', content: text },
+  ];
+  try {
+    const summary = await callChatCompletion(settings, summaryPrompt);
+    project.compacted = { at: Date.now(), summary: String(summary).slice(0, 800), count: old.length };
+    project.updatedAt = Date.now();
+    await store.saveProject(project);
+    return true;
+  } catch (e) {
+    console.error('[compact]', e && e.message);
+    return false;
+  }
 }
 
 /** 手动部署当前代码 */
