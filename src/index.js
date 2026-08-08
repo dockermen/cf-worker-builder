@@ -515,7 +515,10 @@ async function streamChatAction(request, store, id) {
               try { evt = JSON.parse(dataStr); } catch { continue; }
               let delta = '';
               if (isResponses) {
-                if (evt.type === 'output_text.delta') delta = evt.delta || '';
+                // OpenAI Responses 流式增量事件类型为 response.output_text.delta（兼容简写）
+                if (evt.type === 'response.output_text.delta' || evt.type === 'output_text.delta') {
+                  delta = evt.delta || '';
+                }
               } else if (evt.choices && evt.choices[0] && evt.choices[0].delta) {
                 delta = evt.choices[0].delta.content || '';
               }
