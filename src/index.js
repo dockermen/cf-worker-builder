@@ -407,6 +407,7 @@ async function handleApi(request, url, env, store) {
         project.deployed = true;
         project.deployedAt = Date.now();
         project.history.push({ role: 'system', content: `✅ 版本 #${v} 已重新部署到：${r.url}` });
+        pushVersion(project, `恢复版本 #${v} 并部署`, r.url);
       } catch (e) {
         project.history.push({ role: 'system', content: `⚠️ 恢复后重新部署失败：${e.message}` });
       }
@@ -566,9 +567,12 @@ async function chatAction(request, store, id) {
     } catch (_) { /* ignore */ }
   }
 
-  // 部署成功：把本次需求更新到项目功能记忆
+  // 部署成功：先更新项目功能记忆，再存档版本（版本快照包含最新记忆）
   if (deployed && message) {
     await updateProjectMemory(store, settings, project, message);
+  }
+  if (deployed) {
+    pushVersion(project, message.slice(0, 40) || '对话生成并部署', url);
   }
   await store.saveProject(project);
   await store.clearChatStatus(id);
@@ -759,9 +763,12 @@ async function streamChatAction(request, store, id) {
           } catch (_) { /* ignore */ }
         }
 
-        // 部署成功：把本次需求更新到项目功能记忆
+        // 部署成功：先更新项目功能记忆，再存档版本（版本快照包含最新记忆）
         if (deployed && message) {
           await updateProjectMemory(store, settings, cur, message);
+        }
+        if (deployed) {
+          pushVersion(cur, message.slice(0, 40) || '对话生成并部署', url);
         }
         await store.saveProject(cur);
         await store.clearChatStatus(id);
@@ -924,6 +931,7 @@ async function deployAction(store, id) {
     project.deployedAt = Date.now();
     project.updatedAt = Date.now();
     project.history.push({ role: 'system', content: `✅ 已部署到：${r.url}` });
+    pushVersion(project, '手动部署', r.url);
     await store.saveProject(project);
     return json({ project, url: r.url });
   } catch (e) {
@@ -959,6 +967,5 @@ async function doDeploy(store, settings, project, note) {
     code: project.code,
   });
   const url = `https://${project.workerName}.${settings.cfSubdomain}.workers.dev`;
-  pushVersion(project, note || '部署', url);
   return { url };
 }
