@@ -157,6 +157,9 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-08**：v1.2.1 修复设置保存与对话等待
+  - 前端：保存设置时 Key 留空视为沿用已保存值（修复误报缺配置）；所有请求加 120s 超时，模型响应慢时给出明确提示
+  - 后端：LLM 调用（chat/completions 与 responses）加 90s 超时并返回明确错误
 - **2026-08-08**：v1.2.0 修复部署与接口兼容
   - 部署：修复 10021 错误（模块 part Content-Type 改为 application/javascript+module）；已远程部署到 https://builder.logg.asia
   - Agent：新增 responses 接口类型（OpenAI Responses API），设置面板可切换 chat/completions / responses
