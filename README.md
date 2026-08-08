@@ -13,6 +13,8 @@
 | 1. 可配置 OpenAI Baseurl / Key / 模型 | 设置面板中保存，支持任意 OpenAI 兼容服务（DeepSeek 等），密钥脱敏显示 |
 | 2. 以项目为单位创建，自动发布并给地址 | 项目 CRUD + 对话生成代码 + 自动部署到 workers.dev 并返回 URL，后续可在对话框继续提需求迭代修改 |
 | 3. 内置 Cloudflare 登录态 | 支持「在线登录」（设备码 OAuth，类似 `wrangler login --device`，零配置浏览器授权）与手动 API Token；令牌持久化在 KV 且**到期自动刷新**，无需每次登录 |
+| 4. 访问密码保护 | 进入构建器需输入密码（默认 `123456`），登录签发 7 天有效 token，后台可随时修改密码 |
+| 5. 项目与远程 Worker 联动 | 构建器创建的项目删除时**同步删除远程 Worker**；支持**关联已有 Worker 项目**（拉取代码、对话修改、覆盖部署，删除项目不影响远程） |
 
 其他细节：
 
@@ -20,6 +22,7 @@
 - 🚀 自动部署 + 手动「部署」按钮 + 代码页「保存并部署」；
 - 📄 内置代码编辑器，可手动改代码再部署；
 - 🔁 部署失败不丢代码，对话里给出原因，可稍后重试；
+- 🔗 可关联已有 Cloudflare Worker 项目继续编辑（显示「外部 Worker」徽章，删除仅移除本地）；
 - 🎨 深色现代化界面，无需任何前端构建步骤。
 
 ## 🧱 技术架构
@@ -102,6 +105,9 @@ npm run deploy
 4. **对话构建**：在对话框描述需求，例如「做一个天气查询 API，GET /weather?city=北京 返回 JSON」。Agent 生成完整代码后自动部署，聊天记录中会出现 `✅ 已自动部署到：https://xxx.workers.dev`。
 5. **迭代修改**：继续在对话框提新需求（如「加一个 /about 页面」），Agent 会基于历史对话修改代码并重新部署，地址保持不变。
 6. **手动部署**：对话页「🚀 部署」按钮；或切到「代码」页编辑后点「保存并部署」。
+7. **关联已有 Worker**：新建项目对话框切到「关联已有 Worker」，输入 Cloudflare 中的脚本名，构建器自动拉取代码；之后可在对话中修改并覆盖部署。该项目显示「外部 Worker」徽章，删除时只移除本地记录、不影响远程。
+8. **删除联动**：构建器自己创建的项目删除时会同时删除 Cloudflare 上对应的 Worker；关联的外部 Worker 项目不会被删除。
+9. **访问密码**：进入页面需输入密码（默认 `123456`），登录后可在「设置 → ③ 访问密码」中修改。
 
 ## 🔌 API 一览
 
@@ -114,6 +120,10 @@ npm run deploy
 | GET | `/api/oauth/status` | 轮询授权状态；授权完成后自动换取并保存令牌 |
 | POST | `/api/oauth/refresh` | 手动刷新 access_token |
 | POST | `/api/oauth/logout` | 退出登录（撤销令牌） |
+| POST | `/api/auth/login` | 访问密码登录，返回 7 天有效 token |
+| GET | `/api/auth/check` | 校验当前 token 是否有效 |
+| POST | `/api/auth/password` | 修改访问密码（需旧密码） |
+| POST | `/api/projects/import` | 关联已有 Cloudflare Worker 项目 |
 | GET/POST | `/api/projects` | 项目列表 / 创建项目 |
 | GET/DELETE | `/api/projects/:id` | 项目详情 / 删除 |
 | POST | `/api/projects/:id/chat` | 对话（`{message, autoDeploy}`），自动提取代码并部署 |
@@ -157,6 +167,11 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-08**：v1.3.0 访问密码与远程 Worker 联动
+  - 访问密码：默认 123456，SHA-256 存储，登录签发 7 天 token，/api/* 统一鉴权，后台可修改密码
+  - 删除联动：构建器创建的项目删除时同步删除远程 Worker；关联项目只移除本地
+  - 关联已有 Worker：导入接口拉取远程代码建项目，可对话修改并覆盖部署，显示「外部 Worker」徽章
+  - 修复：补充通用 .hidden 样式（此前多个 UI 元素隐藏失效）
 - **2026-08-08**：v1.2.1 修复设置保存与对话等待
   - 前端：保存设置时 Key 留空视为沿用已保存值（修复误报缺配置）；所有请求加 120s 超时，模型响应慢时给出明确提示
   - 后端：LLM 调用（chat/completions 与 responses）加 90s 超时并返回明确错误
