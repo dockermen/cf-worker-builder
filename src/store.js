@@ -61,7 +61,26 @@ export function makeStore(kv) {
       await this.saveProjectList(list.filter((p) => p.id !== id));
     },
 
-    // ============ OAuth（Cloudflare 在线登录） ============
+    // ============ 访问密码与登录会话 ============
+
+  async getAccessConfig() {
+    const raw = await kv.get('access_config', 'json');
+    return raw || null;
+  },
+
+  async saveAccessConfig(cfg) {
+    await kv.put('access_config', JSON.stringify(cfg));
+  },
+
+  async saveAuthSession(token, ttl) {
+    await kv.put(`auth_session:${token}`, '1', { expirationTtl: ttl });
+  },
+
+  async hasAuthSession(token) {
+    return !!(await kv.get(`auth_session:${token}`));
+  },
+
+  // ============ OAuth（Cloudflare 在线登录） ============
 
     /** 进行中的设备码流程 */
     async getOAuthDevice() {

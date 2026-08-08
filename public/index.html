@@ -21,6 +21,7 @@
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  .hidden { display: none !important; }
   html, body { height: 100%; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -237,6 +238,25 @@
   #oauthVerifyUrl { font-size: 12px; color: var(--accent); word-break: break-all; max-width: 100%; }
   #oauthWait { font-size: 13px; color: var(--muted); }
 
+  /* ---------- 访问密码锁屏 ---------- */
+  .lock { position: fixed; inset: 0; z-index: 300; background: var(--bg); display: flex; align-items: center; justify-content: center; }
+  .lock.hidden { display: none; }
+  .lock-box { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 36px 40px; width: 380px; max-width: 92vw; text-align: center; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+  .lock-logo { font-size: 42px; }
+  .lock-box h2 { font-size: 18px; }
+  .lock-box p { font-size: 13px; color: var(--muted); }
+  .lock-box input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; text-align: center; }
+  .lock-box input:focus { border-color: var(--accent); }
+  .lock-box .hint { font-size: 11px; color: var(--muted); }
+
+  /* ---------- 新建/关联标签 ---------- */
+  .import-tabs { display: flex; gap: 8px; }
+  .tab { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 13px; }
+  .tab.active { border-color: var(--accent); color: var(--accent); background: rgba(79,140,255,.08); font-weight: 600; }
+
+  /* ---------- 项目来源徽章 ---------- */
+  .badge-link { font-size: 10px; color: var(--yellow); background: rgba(255,200,87,.12); border: 1px solid rgba(255,200,87,.35); border-radius: 4px; padding: 1px 5px; font-weight: 600; }
+
   @media (max-width: 760px) {
     .sidebar { width: 200px; min-width: 200px; }
     .ws-header { flex-direction: column; align-items: flex-start; }
@@ -288,6 +308,7 @@
         <h2 id="projectName"></h2>
         <div class="status-line">
           <span id="statusBadge" class="badge off">未部署</span>
+          <span id="sourceBadge" class="badge off hidden" style="color:var(--yellow);background:rgba(255,200,87,.12)">外部 Worker</span>
           <a id="projectUrl" href="#" target="_blank" rel="noopener">尚未部署</a>
           <button id="btnCopyUrl" class="link-btn hidden">复制</button>
         </div>
@@ -390,6 +411,17 @@
       🔒 无论哪种方式，凭据都保存在构建器自己的 KV 存储中（在线登录的令牌到期会自动刷新），部署时自动复用。
       API Token 可在 dash.cloudflare.com → 头像 → My Profile → API Tokens → Create Token 创建（模板选「Edit Cloudflare Workers」）。
     </p>
+
+    <h4>③ 访问密码（进入构建器页面时需要）</h4>
+    <label>旧密码
+      <input id="setOldPwd" type="password" placeholder="当前访问密码" autocomplete="off" />
+    </label>
+    <label>新密码
+      <input id="setNewPwd" type="password" placeholder="新密码（至少 4 位）" autocomplete="off" />
+    </label>
+    <div>
+      <button id="btnChangePwd" type="button" class="btn ghost">修改访问密码</button>
+    </div>
   </div>
   <div class="dialog-foot">
     <button id="btnSaveSettings" type="button" class="btn primary">保存设置</button>
@@ -417,21 +449,48 @@
 <!-- ================= 新建项目弹窗 ================= -->
 <dialog id="projectDialog" class="dialog">
   <form method="dialog" class="dialog-head">
-    <h3>＋ 新建项目</h3>
+    <h3>＋ 新建 / 关联项目</h3>
     <button class="close" value="cancel" aria-label="关闭">✕</button>
   </form>
   <div class="dialog-body">
-    <label>项目名称
-      <input id="projName" placeholder="例如：天气 API" />
-    </label>
-    <label>项目描述
-      <textarea id="projDesc" rows="2" placeholder="可选：一句话说明项目用途"></textarea>
-    </label>
+    <div class="import-tabs">
+      <button id="tabCreate" type="button" class="tab active">新建项目</button>
+      <button id="tabImport" type="button" class="tab">关联已有 Worker</button>
+    </div>
+    <div id="createForm">
+      <label>项目名称
+        <input id="projName" placeholder="例如：天气 API" />
+      </label>
+      <label>项目描述
+        <textarea id="projDesc" rows="2" placeholder="可选：一句话说明项目用途"></textarea>
+      </label>
+    </div>
+    <div id="importForm" class="hidden">
+      <label>已有 Worker 名称
+        <input id="impWorkerName" placeholder="例如：my-worker（Cloudflare 中的脚本名）" />
+      </label>
+      <label>项目名称（可选）
+        <input id="impName" placeholder="留空则使用 Worker 名称" />
+      </label>
+      <p class="hint">关联后可在对话框中描述需求修改该 Worker，修改后自动部署覆盖；删除该项目只会移除本地记录，<b>不会删除远程 Worker</b>。</p>
+    </div>
   </div>
   <div class="dialog-foot">
     <button id="btnCreateProject" type="button" class="btn primary">创建项目</button>
+    <button id="btnImportProject" type="button" class="btn primary hidden">关联 Worker</button>
   </div>
 </dialog>
+
+<div id="lockScreen" class="lock hidden">
+  <div class="lock-box">
+    <div class="lock-logo">🔒</div>
+    <h2>Worker 在线构建器</h2>
+    <p>请输入访问密码以进入构建器</p>
+    <input id="lockPassword" type="password" placeholder="访问密码" autocomplete="current-password" />
+    <button id="btnLockLogin" type="button" class="btn primary">进入构建器</button>
+    <p class="hint">默认密码 123456，进入后可在「设置 → 访问密码」中修改</p>
+  </div>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 
@@ -439,7 +498,7 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
-const state = { settings: null, projects: [], project: null, busy: false };
+const state = { settings: null, projects: [], project: null, busy: false, token: '' };
 
 /* ---------------- 基础工具 ---------------- */
 
@@ -463,7 +522,10 @@ async function api(path, opts = {}) {
   let res;
   try {
     res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),
+      },
       ...opts,
       signal: controller.signal,
     });
@@ -475,9 +537,33 @@ async function api(path, opts = {}) {
     throw e;
   }
   clearTimeout(timer);
+  if (res.status === 401 && !path.startsWith('/api/auth/')) {
+    showLockScreen();
+    throw new Error('登录状态已失效，请重新输入访问密码');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
   return data;
+}
+
+/* ---------------- 访问密码 ---------------- */
+
+function showLockScreen() {
+  $('#lockScreen').classList.remove('hidden');
+}
+
+async function doLockLogin() {
+  const pwd = $('#lockPassword').value;
+  if (!pwd) { toast('请输入访问密码', true); return; }
+  try {
+    const r = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: pwd }) });
+    state.token = r.token;
+    localStorage.setItem('builder_token', r.token);
+    $('#lockScreen').classList.add('hidden');
+    $('#lockPassword').value = '';
+    await initApp();
+    toast('✅ 欢迎回来');
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ---------------- 渲染：侧边栏 ---------------- */
@@ -496,7 +582,7 @@ function renderSidebar() {
     const item = document.createElement('div');
     item.className = 'project-item' + (state.project && p.id === state.project.id ? ' active' : '');
     item.innerHTML = `
-      <div class="p-name"><span class="dot ${p.deployed ? 'ok' : ''}"></span>${esc(p.name)}</div>
+      <div class="p-name"><span class="dot ${p.deployed ? 'ok' : ''}"></span>${esc(p.name)}${p.source === 'linked' ? '<span class="badge-link">外部</span>' : ''}</div>
       <div class="p-worker">${esc(p.workerName)}</div>
       <button class="p-del" title="删除项目">✕</button>`;
     item.addEventListener('click', (e) => {
@@ -505,7 +591,9 @@ function renderSidebar() {
     });
     item.querySelector('.p-del').addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm(`确定删除项目「${p.name}」？该操作不可恢复。`)) return;
+      if (!confirm(p.source === 'linked'
+        ? `确定移除项目「${p.name}」？该项目关联的是远程 Worker，只会移除本地记录，不会删除 Cloudflare 上的 Worker。`
+        : `确定删除项目「${p.name}」？将同时删除 Cloudflare 上对应的 Worker（${p.workerName}），该操作不可恢复。`)) return;
       try {
         await api(`/api/projects/${p.id}`, { method: 'DELETE' });
         if (state.project && state.project.id === p.id) {
@@ -570,6 +658,11 @@ function renderProject(p) {
   badge.className = 'badge ' + (p.deployed ? 'ok' : 'off');
   badge.textContent = p.deployed ? '已部署' : '未部署';
 
+  const srcBadge = $('#sourceBadge');
+  if (srcBadge) {
+    srcBadge.classList.toggle('hidden', p.source !== 'linked');
+    srcBadge.textContent = '外部 Worker';
+  }
   const urlEl = $('#projectUrl');
   const copyBtn = $('#btnCopyUrl');
   if (p.url) {
@@ -903,13 +996,74 @@ async function createProject() {
 
 /* ---------------- 事件绑定 ---------------- */
 
-$('#btnNewProject').addEventListener('click', () => $('#projectDialog').showModal());
+$('#btnNewProject').addEventListener('click', () => {
+  // 打开对话框时默认显示「新建」表单
+  $('#tabCreate').classList.add('active');
+  $('#tabImport').classList.remove('active');
+  $('#createForm').classList.remove('hidden');
+  $('#importForm').classList.add('hidden');
+  $('#btnCreateProject').classList.remove('hidden');
+  $('#btnImportProject').classList.add('hidden');
+  $('#projectDialog').showModal();
+});
+
+$('#tabCreate').addEventListener('click', () => {
+  $('#tabCreate').classList.add('active');
+  $('#tabImport').classList.remove('active');
+  $('#createForm').classList.remove('hidden');
+  $('#importForm').classList.add('hidden');
+  $('#btnCreateProject').classList.remove('hidden');
+  $('#btnImportProject').classList.add('hidden');
+});
+
+$('#tabImport').addEventListener('click', () => {
+  $('#tabCreate').classList.remove('active');
+  $('#tabImport').classList.add('active');
+  $('#createForm').classList.add('hidden');
+  $('#importForm').classList.remove('hidden');
+  $('#btnCreateProject').classList.add('hidden');
+  $('#btnImportProject').classList.remove('hidden');
+});
+
+$('#btnImportProject').addEventListener('click', async () => {
+  const workerName = $('#impWorkerName').value.trim();
+  if (!workerName) { toast('请输入要关联的 Worker 名称', true); return; }
+  try {
+    const res = await api('/api/projects/import', {
+      method: 'POST',
+      body: JSON.stringify({ workerName, name: $('#impName').value.trim() }),
+    });
+    $('#projectDialog').close();
+    $('#impWorkerName').value = '';
+    $('#impName').value = '';
+    await refreshProjects();
+    await openProject(res.project.id);
+    toast('✅ 已关联 Worker：' + workerName);
+  } catch (e) { toast(e.message, true); }
+});
 $('#btnSettings').addEventListener('click', openSettings);
 $('#btnCreateProject').addEventListener('click', createProject);
 $('#btnSaveSettings').addEventListener('click', saveSettings);
 $('#btnTestCf').addEventListener('click', testCf);
 
 $('#btnOauthClose').addEventListener('click', () => { stopOauthPoll(); $('#oauthDialog').close(); });
+
+$('#btnChangePwd').addEventListener('click', async () => {
+  const oldPassword = $('#setOldPwd').value;
+  const newPassword = $('#setNewPwd').value;
+  if (!oldPassword || !newPassword) { toast('请填写旧密码与新密码', true); return; }
+  try {
+    await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
+    $('#setOldPwd').value = '';
+    $('#setNewPwd').value = '';
+    toast('✅ 访问密码已修改');
+  } catch (e) { toast(e.message, true); }
+});
+
+$('#btnLockLogin').addEventListener('click', doLockLogin);
+$('#lockPassword').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doLockLogin();
+});
 $('#btnOauthCancel').addEventListener('click', () => { stopOauthPoll(); $('#oauthDialog').close(); });
 
 $('#btnSend').addEventListener('click', sendMessage);
@@ -946,7 +1100,10 @@ $('#btnClearChat').addEventListener('click', async () => {
 
 $('#btnDeleteProject').addEventListener('click', async () => {
   if (!state.project) return;
-  if (!confirm(`确定删除项目「${state.project.name}」？该操作不可恢复。`)) return;
+  const isLinked = state.project.source === 'linked';
+  if (!confirm(isLinked
+    ? `确定移除项目「${state.project.name}」？该项目关联的是远程 Worker，只会移除本地记录，不会删除 Cloudflare 上的 Worker。`
+    : `确定删除项目「${state.project.name}」？将同时删除 Cloudflare 上对应的 Worker（${state.project.workerName}），该操作不可恢复。`)) return;
   try {
     await api(`/api/projects/${state.project.id}`, { method: 'DELETE' });
     state.project = null;
@@ -996,21 +1153,31 @@ document.addEventListener('click', (e) => {
 
 /* ---------------- 初始化 ---------------- */
 
+async function initApp() {
+  const data = await api('/api/state');
+  state.settings = data.settings;
+  state.oauth = data.oauth || { loggedIn: false };
+  state.projects = data.projects;
+  renderSidebar();
+  updateCfgHint();
+  if (data.projects.length) {
+    await openProject(data.projects[0].id);
+  } else {
+    showEmpty();
+  }
+}
+
 (async function init() {
+  state.token = localStorage.getItem('builder_token') || '';
   try {
-    const data = await api('/api/state');
-    state.settings = data.settings;
-    state.oauth = data.oauth || { loggedIn: false };
-    state.projects = data.projects;
-    renderSidebar();
-    updateCfgHint();
-    if (data.projects.length) {
-      await openProject(data.projects[0].id);
+    const r = await api('/api/auth/check');
+    if (r.authed) {
+      await initApp();
     } else {
-      showEmpty();
+      showLockScreen();
     }
   } catch (err) {
-    toast('初始化失败：' + err.message, true);
+    showLockScreen();
   }
 })();
 </script>

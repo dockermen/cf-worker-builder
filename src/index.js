@@ -11,7 +11,6 @@
 import { json, slugify, extractCode, maskKey, DEFAULT_CODE } from './util.js';
 import { makeStore } from './store.js';
 import { callChatCompletion, SYSTEM_PROMPT } from './agent.js';
-import { deployWorker, getAccountSubdomain, testCloudflareConnection } from './deploy.js';
 import {
   getClientId,
   startDeviceFlow,
@@ -21,6 +20,8 @@ import {
   getCredentials,
   publicOAuth,
 } from './oauth.js';
+import { login, checkAuth, changePassword } from './auth.js';
+import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode } from './deploy.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -29,6 +30,15 @@ export default {
 
     try {
       if (url.pathname.startsWith('/api/')) {
+        // 访问密码鉴权：登录与状态检查接口豁免，其余 API 需携带有效 token
+        const AUTH_FREE = ['/api/auth/login', '/api/auth/check'];
+        if (!AUTH_FREE.includes(url.pathname)) {
+          const token = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+          const authed = await checkAuth(store, token);
+          if (!authed) {
+            return json({ error: '未授权，请先输入访问密码', code: 'UNAUTHORIZED' }, 401);
+          }
+        }
         return await handleApi(request, url, env, store);
       }
       // 非 API 请求：交给静态资源（前端页面）
@@ -50,6 +60,25 @@ async function handleApi(request, url, env, store) {
       return {};
     }
   };
+
+  // ============ 访问密码 ============
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const body = await readBody();
+    const r = await login(store, body.password);
+    return r.ok ? json({ ok: true, token: r.token }) : json({ error: r.error }, 401);
+  }
+
+  if (pathname === '/api/auth/check' && method === 'GET') {
+    const token = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+    const authed = await checkAuth(store, token);
+    return json({ authed });
+  }
+
+  if (pathname === '/api/auth/password' && method === 'POST') {
+    const body = await readBody();
+    const r = await changePassword(store, body.oldPassword, body.newPassword);
+    return r.ok ? json({ ok: true }) : json({ error: r.error }, 400);
+  }
 
   // ============ 全局状态 ============
   if (pathname === '/api/state' && method === 'GET') {
@@ -208,6 +237,7 @@ async function handleApi(request, url, env, store) {
       name,
       description: String(body.description || '').trim(),
       workerName,
+      source: 'created', // created=构建器创建，linked=关联已有 Worker
       code: DEFAULT_CODE,
       url: '',
       deployed: false,
@@ -230,9 +260,70 @@ async function handleApi(request, url, env, store) {
       return json({ project });
     }
     if (method === 'DELETE') {
+      const project = await store.getProject(id);
+      if (!project) return json({ error: '项目不存在' }, 404);
+
+      // 构建器创建的项目：删除时联动删除对应的远程 Worker；
+      // 关联已有 Worker 的项目（linked）：只移除本地项目，不影响远程 Worker
+      let workerDeleted = null;
+      if (project.source !== 'linked' && project.workerName) {
+        try {
+          const cred = await getCredentials(store, await store.getSettings());
+          const r = await deleteWorker(cred.token, cred.accountId, project.workerName);
+          workerDeleted = r.deleted ? true : { skipped: 'not_found' };
+        } catch (e) {
+          workerDeleted = { error: e.message };
+        }
+      }
       await store.deleteProject(id);
-      return json({ ok: true });
+      return json({ ok: true, workerDeleted });
     }
+  }
+
+  // ============ 关联已有 Cloudflare Worker ============
+  if (pathname === '/api/projects/import' && method === 'POST') {
+    const body = await readBody();
+    const workerName = String(body.workerName || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(workerName)) {
+      return json({ error: 'Worker 名称不合法（仅支持字母、数字、下划线、短横线）' }, 400);
+    }
+    const settings = await store.getSettings();
+    let cred;
+    try {
+      cred = await getCredentials(store, settings);
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+    // 拉取已有代码
+    const { code, isModule } = await fetchWorkerCode(cred.token, cred.accountId, workerName);
+    if (!code) return json({ error: '未能获取到该 Worker 的代码' }, 400);
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const project = {
+      id,
+      name: body.name ? String(body.name).trim() : workerName,
+      description: `已关联 Cloudflare Worker：${workerName}（${isModule ? 'ES Module' : 'Service Worker'} 格式）`,
+      workerName,
+      source: 'linked', // 关联项目：删除时只移除本地，不影响远程 Worker
+      code,
+      url: '',
+      deployed: true,
+      deployedAt: now,
+      history: [
+        { role: 'system', content: `🔗 已关联已有 Cloudflare Worker：${workerName}，可在对话中描述需求进行修改，修改后自动部署覆盖该 Worker。` },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    // 探测子域并拼接访问地址
+    try {
+      const sd = await getAccountSubdomain(cred.token, cred.accountId);
+      settings.cfSubdomain = sd;
+      await store.saveSettings(settings);
+      project.url = `https://${workerName}.${sd}.workers.dev`;
+    } catch (_) { /* ignore */ }
+    await store.saveProject(project);
+    return json({ project });
   }
 
   // ============ 项目子操作：chat / deploy / code / clear ============
