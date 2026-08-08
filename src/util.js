@@ -29,13 +29,34 @@ export function normalizeBaseUrl(url) {
 }
 
 /**
- * 从 LLM 回复中提取第一个代码块。
- * 支持 ```javascript / ```js / ```（无语言标注）三种围栏。
+ * 从 LLM 回复中提取 Worker 代码块。
+ * - 跳过工具/命令块（test-http、curl、markdown 等），避免把工具调用误当项目代码；
+ * - 校验代码具备 Worker 特征（export default 或 fetch 监听），防止普通文本污染项目代码。
  */
+const TOOL_CODE_LANGS = new Set(['test-http', 'tool', 'markdown', 'curl', 'bash', 'sh', 'shell', 'http', 'json', 'text', 'txt']);
+
 export function extractCode(text) {
   if (!text) return null;
-  const m = String(text).match(/```(?:javascript|js)?\s*\n?([\s\S]*?)```/i);
-  return m ? m[1].trim() : null;
+  const re = /```([a-zA-Z0-9_-]*)\s*\n?([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(String(text))) !== null) {
+    const lang = (m[1] || '').trim().toLowerCase();
+    if (TOOL_CODE_LANGS.has(lang)) continue; // 跳过工具/命令块
+    const code = m[2].trim();
+    if (!code) continue;
+    // Worker 代码特征校验
+    if (/export\s+default/.test(code) || /addEventListener\s*\(\s*['"]fetch/.test(code)) {
+      return code;
+    }
+    if (lang === 'javascript' || lang === 'js') {
+      return code;
+    }
+    // 无语言标注：需有明显 JS 特征才接受
+    if (lang === '' && /new\s+Response|\(async\s*\)?\s*=>|async\s+function|function\s+fetch/.test(code)) {
+      return code;
+    }
+  }
+  return null;
 }
 
 /** 脱敏显示密钥 */

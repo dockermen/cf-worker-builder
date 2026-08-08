@@ -24,8 +24,12 @@ export async function getAccountSubdomain(cfToken, accountId) {
  * @returns {Promise<object>} Cloudflare API 返回的 result
  */
 export async function deployWorker({ cfToken, accountId, scriptName, code }) {
-  // 检测代码格式：含 export default 视为 ES Module，否则按 service worker 格式上传
+  // 部署前校验：必须是合法的 Worker 代码（ES Module 或 service worker），防止垃圾内容上传
   const isModule = /export\s+default/.test(code);
+  const isValidWorker = isModule || /addEventListener\s*\(\s*['"]fetch/.test(code);
+  if (!code || !isValidWorker) {
+    throw new Error('代码无效（不是合法的 Cloudflare Worker 代码，缺少 export default 或 fetch 监听），已取消部署');
+  }
   const boundary = '----cf-worker-builder-' + Math.random().toString(36).slice(2);
   const metadata = isModule
     ? JSON.stringify({
