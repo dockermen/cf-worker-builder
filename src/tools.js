@@ -156,3 +156,16 @@ export function formatTestResult(result, label = '测试') {
   }
   return `🔧 ${label}结果：${result.status} ${result.statusText || ''}${bodyPreview ? '\n' + bodyPreview : ''}`;
 }
+
+
+/** 从 Worker 代码中提取路由路径（用于智能冒烟测试），始终包含根路径 / */
+export function extractRoutes(code) {
+  const routes = new Set(['/']);
+  const re = /url\.pathname(?:\s*(?:===|==)\s*|\.startsWith\s*\()\s*['"`]([^'"`]+)['"`]/g;
+  let m;
+  while ((m = re.exec(String(code || ''))) !== null) {
+    const p = m[1];
+    if (p && p.startsWith('/') && p.length <= 40) routes.add(p);
+  }
+  return [...routes].slice(0, 6);
+}

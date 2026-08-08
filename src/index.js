@@ -21,7 +21,7 @@ import {
   publicOAuth,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
-import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult } from './tools.js';
+import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes } from './tools.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode, listWorkers } from './deploy.js';
 
 export default {
@@ -344,6 +344,8 @@ async function handleApi(request, url, env, store) {
       await store.saveSettings(settings);
       project.url = `https://${workerName}.${sd}.workers.dev`;
     } catch (_) { /* ignore */ }
+    // 版本基线：关联导入的原始远程代码固定为版本 #1，便于后续对比/恢复
+    pushVersion(project, '关联导入：远程 Worker 原始代码', project.url);
     await store.saveProject(project);
     return json({ project });
   }
@@ -530,8 +532,15 @@ async function chatAction(request, store, id) {
   }
   if (deployed) {
     try {
-      smokeTest = await executeHttpTest(`GET ${url}`);
-      project.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+      smokeTest = await smartSmokeTest(url, project.code);
+      if (smokeTest && !smokeTest.error && smokeTest.status < 400) {
+        project.history.push({
+          role: 'system',
+          content: `🌐 冒烟测试：${smokeTest.route === '/' ? '根路径 /' : smokeTest.route} → HTTP ${smokeTest.status} ✅`,
+        });
+      } else if (smokeTest) {
+        project.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+      }
     } catch (_) { /* ignore */ }
   }
 
@@ -712,8 +721,15 @@ async function streamChatAction(request, store, id) {
         let smokeTest = null;
         if (deployed) {
           try {
-            smokeTest = await executeHttpTest(`GET ${url}`);
-            cur.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+            smokeTest = await smartSmokeTest(url, cur.code);
+            if (smokeTest && !smokeTest.error && smokeTest.status < 400) {
+              cur.history.push({
+                role: 'system',
+                content: `🌐 冒烟测试：${smokeTest.route === '/' ? '根路径 /' : smokeTest.route} → HTTP ${smokeTest.status} ✅`,
+              });
+            } else if (smokeTest) {
+              cur.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+            }
           } catch (_) { /* ignore */ }
         }
 
@@ -846,6 +862,19 @@ async function deployAction(store, id) {
   } catch (e) {
     return json({ error: e.message }, 502);
   }
+}
+
+/** 智能冒烟测试：从代码提取路由，逐个探测，找到第一个正常响应（避免根路径未处理时误报 404） */
+async function smartSmokeTest(url, code) {
+  const routes = extractRoutes(code || '');
+  let last = null;
+  for (const r of routes) {
+    const target = r === '/' ? url : `${url}${r}`;
+    const res = await executeHttpTest(`GET ${target}`);
+    last = { ...res, route: r };
+    if (!res.error && res.status < 400) break; // 找到正常响应即停止
+  }
+  return last;
 }
 
 /** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
