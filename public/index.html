@@ -297,7 +297,7 @@
     .messages { padding: 14px; }
     .msg { font-size: 13.5px; max-width: 96%; }
     .composer { padding: 10px 12px 12px; }
-    .composer textarea { font-size: 14px; }
+    .composer textarea { font-size: 16px; }
     .composer-bar { flex-direction: column; align-items: stretch; gap: 8px; }
     .composer-bar .btn { width: 100%; }
     .dialog { width: 94vw; }
@@ -786,7 +786,7 @@ function scrollBottom() {
 
 function setBusy(busy) {
   $('#btnSend').disabled = busy;
-  $('#input').disabled = busy;
+  // 输入框保持可用：发送期间用户仍可继续输入，避免请求挂起时手机输入法"没反应"
 }
 
 function autoGrow() {
@@ -818,6 +818,8 @@ async function sendMessage() {
 
   let assistantEl = null;
   let fullText = '';
+  const abortCtl = new AbortController();
+  const abortTimer = setTimeout(() => abortCtl.abort(), 150000); // 150s 兜底，避免请求挂起导致输入框不可用
   try {
     // SSE 流式对话
     const res = await fetch(`/api/projects/${state.project.id}/chat/stream`, {
@@ -827,6 +829,7 @@ async function sendMessage() {
         ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),
       },
       body: JSON.stringify({ message: text, autoDeploy: $('#autoDeploy').checked }),
+      signal: abortCtl.signal,
     });
     if (res.status === 401) {
       showLockScreen();
@@ -885,8 +888,10 @@ async function sendMessage() {
     if (assistantEl) assistantEl.remove();
     input.value = text;
     autoGrow();
-    toast(err.message, true);
+    if (err && err.name === 'AbortError') toast('请求超时，请重试（已发送的内容会保留在记录中）', true);
+    else toast(err.message, true);
   } finally {
+    clearTimeout(abortTimer);
     state.busy = false;
     setBusy(false);
   }
@@ -1240,6 +1245,7 @@ $('#btnLockLogin').addEventListener('click', doLockLogin);
 
 $('#sidebarToggle').addEventListener('click', toggleSidebar);
 $('#sidebarOverlay').addEventListener('click', () => setSidebar(false));
+$('#sidebarOverlay').addEventListener('touchstart', () => setSidebar(false), { passive: true });
 window.addEventListener('resize', () => {
   if (window.innerWidth > 760 && !document.body.classList.contains('sidebar-open')) {
     // 桌面端恢复展开
@@ -1253,7 +1259,8 @@ $('#btnOauthCancel').addEventListener('click', () => { stopOauthPoll(); $('#oaut
 
 $('#btnSend').addEventListener('click', sendMessage);
 $('#input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  // isComposing：中文输入法候选词确认/合成期间不拦截回车，避免输入异常
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     sendMessage();
   }
