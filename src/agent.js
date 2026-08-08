@@ -25,3 +25,37 @@ export const SYSTEM_PROMPT = `你是「Worker 在线构建器」的智能体，�
 1. 需要生成或修改代码时：先用 1-3 句话说明实现思路，然后输出「完整可部署」的代码，代码必须放在单个 \`\`\`javascript 代码块中。
 2. 用户要求修改功能时，输出修改后的「完整」代码（不要输出 diff、省略号或占位注释）。
 3. 如果用户只是提问、不涉及代码改动，正常回答即可，不要输出代码块。`;
+/**
+ * 调用 OpenAI 兼容 chat/completions
+ * @param {{openaiBaseUrl:string, openaiKey:string, openaiModel:string}} settings
+ * @param {Array<{role:string, content:string}>} messages
+ */
+export async function callChatCompletion(settings, messages) {
+  const base = normalizeBaseUrl(settings.openaiBaseUrl);
+  const url = `${base}/chat/completions`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.openaiKey}`,
+    },
+    body: JSON.stringify({
+      model: settings.openaiModel,
+      messages,
+      temperature: 0.4,
+      max_tokens: 8192,
+      stream: false,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`大模型调用失败（HTTP ${res.status}）：${text.slice(0, 400)}`);
+  }
+
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('大模型返回内容为空');
+  return content;
+}
