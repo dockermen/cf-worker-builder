@@ -12,18 +12,29 @@
 const PRIVATE_HOST =
   /^(localhost|127(\.\d{1,3}){3}|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|169\.254(\.\d{1,3}){2}|0\.0\.0\.0|::1|0:0:0:0:0:0:0:1)$/i;
 
-/** 从回复文本中提取 test-http 代码块 */
+/** 从回复文本中提取第一个 test-http 代码块 */
 export function extractHttpTest(text) {
   const m = String(text || '').match(/```test-http\s*\n([\s\S]*?)```/i);
   if (!m) return null;
   return m[1];
 }
 
+/** 从回复文本中提取全部 test-http 代码块（递归工具循环用） */
+export function extractAllHttpTests(text) {
+  const re = /```test-http\s*\n([\s\S]*?)```/gi;
+  const specs = [];
+  let m;
+  while ((m = re.exec(String(text || ''))) !== null) {
+    specs.push(m[1]);
+  }
+  return specs;
+}
+
 /** 解析 test-http 规格：首行 METHOD URL，其余为 Header，空行后为 body */
 export function parseHttpTestSpec(spec) {
   const lines = String(spec || '').split('\n');
   const first = (lines.shift() || '').trim();
-  const fm = first.match(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\S+)/i);
+  const fm = first.match(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|MARKDOWN)\s+(\S+)/i);
   if (!fm) return null;
   const method = fm[1].toUpperCase();
   const url = fm[2];
@@ -72,12 +83,21 @@ export async function executeHttpTest(specOrSpecText) {
   if (!check.ok) return { error: check.error };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timer = setTimeout(() => controller.abort(), 15000);
+
+  // MARKDOWN 模式：通过 r.jina.ai reader 获取网页 Markdown（作为资料依据）
+  let target = parsed.url;
+  let method = parsed.method;
+  if (method === 'MARKDOWN') {
+    target = `https://r.jina.ai/${parsed.url}`;
+    method = 'GET';
+  }
+
   try {
-    const res = await fetch(parsed.url, {
-      method: parsed.method,
+    const res = await fetch(target, {
+      method,
       headers: parsed.headers,
-      body: parsed.method === 'GET' || parsed.method === 'HEAD' ? undefined : parsed.body || undefined,
+      body: method === 'GET' || method === 'HEAD' ? undefined : parsed.body || undefined,
       signal: controller.signal,
       redirect: 'follow',
     });
@@ -88,15 +108,23 @@ export async function executeHttpTest(specOrSpecText) {
       status: res.status,
       statusText: res.statusText,
       contentType: res.headers.get('content-type') || '',
-      body: bodyText.slice(0, 2000),
+      body: bodyText.slice(0, 3000),
     };
   } catch (e) {
     return {
-      error: e && e.name === 'AbortError' ? '请求超时（10 秒）' : String(e.message || '请求失败'),
+      error: e && e.name === 'AbortError' ? '请求超时（15 秒）' : String(e.message || '请求失败'),
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** 把工具结果格式化为对话回填消息（供模型下一轮继续使用） */
+export function formatToolResult(result, index) {
+  if (!result) return '';
+  if (result.error) return `🔧 工具结果（#${index || 1}）请求失败：${result.error}`;
+  const bodyPreview = (result.body || '').slice(0, 1500);
+  return `🔧 工具结果（#${index || 1}）[${result.method} ${result.url}]：HTTP ${result.status}${bodyPreview ? '\n```\n' + bodyPreview + '\n```' : ''}`;
 }
 
 /** 把测试结果格式化为对话中展示的消息 */

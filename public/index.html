@@ -884,6 +884,24 @@ async function sendMessage() {
           fullText += payload.text || '';
           assistantEl.textContent = fullText;
           scrollBottom();
+        } else if (event === 'tool') {
+          // 工具执行完成：结束当前内容段，显示工具摘要；后续 delta 会新建内容段
+          if (assistantEl) { assistantEl.classList.remove('streaming'); assistantEl = null; }
+          const r = payload.result || {};
+          const toolDiv = document.createElement('div');
+          const isErr = !!(r.error || (r.status && r.status >= 500));
+          toolDiv.className = 'msg system' + (isErr ? ' warn' : ' ok');
+          toolDiv.textContent = r.error
+            ? '🔧 工具执行失败：' + r.error
+            : '🔧 工具：' + (r.method || 'GET') + ' ' + (r.url || '') + ' → ' + (r.status || '') + (r.statusText ? ' ' + r.statusText : '');
+          box.appendChild(toolDiv);
+          scrollBottom();
+        } else if (event === 'toolnote') {
+          const note = document.createElement('div');
+          note.className = 'msg system';
+          note.textContent = payload.message || '';
+          box.appendChild(note);
+          scrollBottom();
         } else if (event === 'done') {
           typing.remove();
           state.project = payload.project;

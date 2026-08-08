@@ -21,7 +21,7 @@ import {
   publicOAuth,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
-import { extractHttpTest, executeHttpTest, formatTestResult } from './tools.js';
+import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult } from './tools.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode } from './deploy.js';
 
 export default {
@@ -508,8 +508,10 @@ async function chatAction(request, store, id) {
 }
 
 /**
- * 流式对话：SSE 逐字输出，结束时提取代码并自动部署
- * 事件：delta（增量文本）/ done（{reply, code, deployed, url, deployError, project}）/ error（{error}）
+ * 流式对话（递归工具循环）：
+ * - SSE 逐字输出；若模型输出 test-http / MARKDOWN 工具块，系统在同一轮对话内自动执行并把结果回填给模型，
+ *   模型可基于结果继续输出（修改代码、再次测试…），直到无工具调用或达到轮次上限（MAX_TOOL_ROUNDS）
+ * 事件：delta（增量文本）/ tool（工具执行摘要）/ toolnote（提示）/ done / error
  */
 async function streamChatAction(request, store, id) {
   const project = await store.getProject(id);
@@ -534,27 +536,15 @@ async function streamChatAction(request, store, id) {
   await store.saveProject(project);
   await store.setChatStatus(id, { status: 'running', startedAt: Date.now() });
 
-  const messages = [
+  let messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...project.history.slice(-40),
   ];
 
-  let llm;
-  try {
-    llm = await streamChatCompletion(settings, messages);
-  } catch (e) {
-    project.history.push({ role: 'system', content: `⚠️ 对话调用失败：${e.message}` });
-    await store.saveProject(project);
-    await store.clearChatStatus(id);
-    return json({ error: e.message }, 502);
-  }
-
-  const { response: llmRes, isResponses } = llm;
-  const reader = llmRes.body.getReader();
-  const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  let buffer = '';
-  let fullText = '';
+  const decoder = new TextDecoder();
+  const MAX_TOOL_ROUNDS = 4;
+  const allToolResults = [];
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -562,45 +552,81 @@ async function streamChatAction(request, store, id) {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       };
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = buffer.indexOf('\n\n')) >= 0) {
-            const chunk = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            for (const line of chunk.split('\n')) {
-              if (!line.startsWith('data:')) continue;
-              const dataStr = line.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-              let evt;
-              try { evt = JSON.parse(dataStr); } catch { continue; }
-              let delta = '';
-              if (isResponses) {
-                // OpenAI Responses 流式增量事件类型为 response.output_text.delta（兼容简写）
-                if (evt.type === 'response.output_text.delta' || evt.type === 'output_text.delta') {
-                  delta = evt.delta || '';
+        let lastRoundText = '';
+        // ============ 递归工具循环 ============
+        for (let round = 0; ; round++) {
+          const { response: llmRes, isResponses } = await streamChatCompletion(settings, messages);
+          const reader = llmRes.body.getReader();
+          let buffer = '';
+          let roundText = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+              const chunk = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              for (const line of chunk.split('\n')) {
+                if (!line.startsWith('data:')) continue;
+                const dataStr = line.slice(5).trim();
+                if (dataStr === '[DONE]') continue;
+                let evt;
+                try { evt = JSON.parse(dataStr); } catch { continue; }
+                let delta = '';
+                if (isResponses) {
+                  if (evt.type === 'response.output_text.delta' || evt.type === 'output_text.delta') {
+                    delta = evt.delta || '';
+                  }
+                } else if (evt.choices && evt.choices[0] && evt.choices[0].delta) {
+                  delta = evt.choices[0].delta.content || '';
                 }
-              } else if (evt.choices && evt.choices[0] && evt.choices[0].delta) {
-                delta = evt.choices[0].delta.content || '';
-              }
-              if (delta) {
-                fullText += delta;
-                send('delta', { text: delta });
+                if (delta) {
+                  roundText += delta;
+                  send('delta', { text: delta });
+                }
               }
             }
           }
+          lastRoundText = roundText;
+
+          // 保存本论回复
+          const cur = await store.getProject(id);
+          cur.history.push({ role: 'assistant', content: roundText });
+          cur.updatedAt = Date.now();
+
+          // 检查工具调用
+          const tests = extractAllHttpTests(roundText);
+          if (!tests.length) {
+            await store.saveProject(cur);
+            break; // 无工具调用，结束递归
+          }
+
+          // 执行工具并回填结果
+          let toolIdx = 0;
+          for (const spec of tests) {
+            toolIdx++;
+            const r = await executeHttpTest(spec);
+            allToolResults.push(r);
+            cur.history.push({ role: 'system', content: formatToolResult(r, toolIdx) });
+            send('tool', { result: r });
+          }
+          await store.saveProject(cur);
+
+          if (round >= MAX_TOOL_ROUNDS - 1) {
+            send('toolnote', { message: `已达到工具自动调用轮次上限（${MAX_TOOL_ROUNDS}），如需继续可再发一条消息` });
+            break;
+          }
+          // 更新上下文后自动进入下一轮（递归对话的核心）
+          messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...cur.history.slice(-40)];
         }
 
-        // 流结束：保存回复 → 提取代码 → 自动部署 → 执行测试工具与冒烟测试
+        // ============ 循环结束：部署 + 冒烟测试 ============
         const cur = await store.getProject(id);
-        cur.history.push({ role: 'assistant', content: fullText });
-        cur.updatedAt = Date.now();
         let deployed = false;
         let url = cur.url || '';
         let deployError = null;
-        const code = extractCode(fullText);
+        const code = extractCode(lastRoundText);
         if (code) {
           cur.code = code;
           if (body.autoDeploy !== false) {
@@ -622,37 +648,31 @@ async function streamChatAction(request, store, id) {
           }
         }
 
-        // Agent 工具：test-http（等效 curl，由模型按需发起）
-        let testResult = null;
-        const testSpec = extractHttpTest(fullText);
-        if (testSpec) {
-          testResult = await executeHttpTest(testSpec);
-          cur.history.push({ role: 'system', content: formatTestResult(testResult, 'HTTP ') });
-        }
-
-        // 自动冒烟测试：部署成功后自动请求一次首页
         let smokeTest = null;
         if (deployed) {
           try {
             smokeTest = await executeHttpTest(`GET ${url}`);
-            cur.history.push({
-              role: 'system',
-              content: formatTestResult(smokeTest, '冒烟测试：'),
-            });
+            cur.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
           } catch (_) { /* ignore */ }
         }
 
         await store.saveProject(cur);
         await store.clearChatStatus(id);
-        send('done', { reply: fullText, code, deployed, url, deployError, testResult, smokeTest, project: cur });
+        send('done', {
+          reply: lastRoundText,
+          code,
+          deployed,
+          url,
+          deployError,
+          testResult: allToolResults.length ? allToolResults[allToolResults.length - 1] : null,
+          smokeTest,
+          toolRounds: allToolResults.length ? undefined : 0,
+          project: cur,
+        });
         controller.close();
       } catch (e) {
-        // 中断：保留已生成内容（若有）并记录错误
         try {
           const cur = await store.getProject(id);
-          if (fullText.trim()) {
-            cur.history.push({ role: 'assistant', content: fullText });
-          }
           cur.history.push({ role: 'system', content: `⚠️ 对话中断：${e.message}` });
           cur.updatedAt = Date.now();
           await store.saveProject(cur);
