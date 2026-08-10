@@ -21,7 +21,8 @@ async function getAccessConfig(store) {
   let cfg = await store.getAccessConfig();
   if (!cfg || !cfg.passwordHash) {
     const salt = crypto.randomUUID();
-    cfg = { passwordHash: await sha256(DEFAULT_PASSWORD + ':' + salt), salt };
+    // isDefault=true 表示仍在使用出厂默认密码（123456），登录后必须强制修改
+    cfg = { passwordHash: await sha256(DEFAULT_PASSWORD + ':' + salt), salt, isDefault: true };
     await store.saveAccessConfig(cfg);
   }
   return cfg;
@@ -36,7 +37,7 @@ export async function login(store, password) {
   }
   const token = crypto.randomUUID();
   await store.saveAuthSession(token, SESSION_TTL);
-  return { ok: true, token };
+  return { ok: true, token, mustChangePassword: !!cfg.isDefault };
 }
 
 /** 校验请求 token 是否有效 */
@@ -59,6 +60,7 @@ export async function changePassword(store, oldPassword, newPassword) {
   const salt = crypto.randomUUID();
   cfg.passwordHash = await sha256(np + ':' + salt);
   cfg.salt = salt;
+  cfg.isDefault = false; // 修改后解除「默认密码」标记
   await store.saveAccessConfig(cfg);
   return { ok: true };
 }

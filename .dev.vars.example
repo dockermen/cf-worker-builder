@@ -1,0 +1,2 @@
+# 本地开发环境变量示例：复制为 .dev.vars 后按需填写
+# OAUTH_CLIENT_ID = "自建 Cloudflare OAuth 客户端 ID（可选，默认复用官方客户端）"

@@ -66,7 +66,9 @@ async function handleApi(request, url, env, store) {
   if (pathname === '/api/auth/login' && method === 'POST') {
     const body = await readBody();
     const r = await login(store, body.password);
-    return r.ok ? json({ ok: true, token: r.token }) : json({ error: r.error }, 401);
+    return r.ok
+      ? json({ ok: true, token: r.token, mustChangePassword: !!r.mustChangePassword })
+      : json({ error: r.error }, 401);
   }
 
   if (pathname === '/api/auth/check' && method === 'GET') {

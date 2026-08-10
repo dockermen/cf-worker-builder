@@ -89,6 +89,7 @@ npm run dev
 # 3.1 创建 KV 命名空间（只需一次）
 npx wrangler kv namespace create BUILDER_KV
 # 把输出中的 id 填到 wrangler.toml 的 [[kv_namespaces]]
+# （wrangler.toml 中默认是占位符 REPLACE_WITH_YOUR_KV_NAMESPACE_ID，部署前必须替换）
 
 # 3.2 登录（首次部署需要，之后由构建器自己保存的 Token 承担运行时登录态）
 npx wrangler login
@@ -110,7 +111,7 @@ npm run deploy
 6. **手动部署**：对话页「🚀 部署」按钮；或切到「代码」页编辑后点「保存并部署」。
 7. **关联已有 Worker**：新建项目对话框切到「关联已有 Worker」，输入 Cloudflare 中的脚本名，构建器自动拉取代码；之后可在对话中修改并覆盖部署。该项目显示「外部 Worker」徽章，删除时只移除本地记录、不影响远程。
 8. **删除联动**：构建器自己创建的项目删除时会同时删除 Cloudflare 上对应的 Worker；关联的外部 Worker 项目不会被删除。
-9. **访问密码**：进入页面需输入密码（默认 `123456`），登录后可在「设置 → ③ 访问密码」中修改。
+9. **访问密码**：进入页面需输入密码（默认 `123456`），**首次登录会强制提示修改**，登录后也可在「设置 → ③ 访问密码」中随时修改。
 
 ## 🔌 API 一览
 
@@ -155,6 +156,12 @@ npm run deploy
 4. 点击 **Continue to summary → Create Token**，复制生成的 Token；
 5. **Account ID** 在 dashboard 首页右侧「Account ID」字段，或 头像 → My Profile 页面查看。
 
+## 🔒 安全模型（开源注意）
+
+本项目是**单用户自托管**工具：用户配置的 OpenAI Key / Cloudflare Token / OAuth 令牌以明文保存在构建器自己的 Cloudflare KV 中；访问密码默认 `123456`，**首次登录后必须立即修改**。**请勿部署到多人共享环境**。
+
+详细安全说明与已知限制见 [SECURITY.md](./SECURITY.md)。
+
 ## 🔒 安全说明
 
 - API Key 与 Cloudflare Token 保存在构建器自己的 KV 中（明文存储）。这是单用户自托管工具，**请勿部署到多人共享环境**。
@@ -170,6 +177,11 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-10**：v1.10.0 开源准备
+  - 脱敏 wrangler.toml（KV id / 自定义域改为占位符），移除个人部署信息
+  - 新增 LICENSE（MIT）、SECURITY.md、CONTRIBUTING.md、.dev.vars.example
+  - package.json 补全（license / keywords / engines）
+  - 安全增强：默认密码（123456）首次登录强制提示修改
 - **2026-08-08**：v1.9.5 项目记忆详细文档化并注入代码生成
   - 记忆升级为结构化 Markdown 文档：一、需求 二、功能 三、技术信息 四、变更记录（保留历史并追加每次改动）
   - 关联导入时 LLM 分析代码生成详细记忆文档；部署成功后 LLM 整合需求/代码更新文档
@@ -236,7 +248,7 @@ npm run deploy
   - 前端：保存设置时 Key 留空视为沿用已保存值（修复误报缺配置）；所有请求加 120s 超时，模型响应慢时给出明确提示
   - 后端：LLM 调用（chat/completions 与 responses）加 90s 超时并返回明确错误
 - **2026-08-08**：v1.2.0 修复部署与接口兼容
-  - 部署：修复 10021 错误（模块 part Content-Type 改为 application/javascript+module）；已远程部署到 https://builder.logg.asia
+  - 部署：修复 10021 错误（模块 part Content-Type 改为 application/javascript+module）
   - Agent：新增 responses 接口类型（OpenAI Responses API），设置面板可切换 chat/completions / responses
   - 前端：登录态提示识别 OAuth 在线登录，登录后不再误报未配置 Cloudflare
   - 提示词：强化 Cloudflare Worker 平台约束（禁 Node.js 特性、禁 npm 依赖、输出完整模块代码）

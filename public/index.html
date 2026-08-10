@@ -660,7 +660,12 @@ async function doLockLogin() {
     $('#lockScreen').classList.add('hidden');
     $('#lockPassword').value = '';
     await initApp();
-    toast('✅ 欢迎回来');
+    if (r.mustChangePassword) {
+      toast('⚠️ 当前仍为默认密码，请立即在设置中修改！', true);
+      setTimeout(() => openSettings(), 400);
+    } else {
+      toast('✅ 欢迎回来');
+    }
   } catch (e) { toast(e.message, true); }
 }
 
