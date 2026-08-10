@@ -622,6 +622,9 @@ async function streamChatAction(request, store, id) {
       const send = (event, data) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       };
+      const taskStartedAt = Date.now();
+      const MAX_TASK_MS = 600000; // 任务总时长兜底（10 分钟）
+      let forcedEnd = false;
       try {
         let lastRoundText = '';
         const allRoundTexts = []; // 聚合所有轮次文本（代码可能出现在任意一轮）
@@ -642,24 +645,41 @@ async function streamChatAction(request, store, id) {
           const reader = llmRes.body.getReader();
           let buffer = '';
           let roundText = '';
-          let lastBeat = Date.now();
-          const startedAt = (await store.getChatStatus(id))?.startedAt || Date.now();
+          // 可靠心跳：Promise.race 让「读流」与「20 秒定时器」竞争。
+          // 即使模型长时间无输出（read 挂起），心跳分支也会定期刷新 chat-status，避免前端误判中断。
+          let nextBeat = Date.now() + 20000; // 心跳绝对到期时间（数据密集也不会推迟心跳）
           while (true) {
-            const { done, value } = await reader.read();
+            const raced = await Promise.race([
+              reader.read().then(
+                (v) => ({ type: 'data', v }),
+                (e) => ({ type: 'error', e })
+              ),
+              new Promise((r) => setTimeout(() => r({ type: 'beat' }), Math.max(0, nextBeat - Date.now()))),
+            ]);
+            if (raced.type === 'beat') {
+              if (Date.now() >= nextBeat) {
+                nextBeat = Date.now() + 20000;
+                await store.setChatStatus(id, {
+                  status: 'running',
+                  startedAt: taskStartedAt,
+                  stage: 'thinking',
+                  round: round + 1,
+                  note: `第 ${round + 1} 轮生成中（已输出 ${roundText.length} 字，等待模型输出…）`,
+                  updatedAt: Date.now(),
+                });
+                // 总时长兜底：超时强制结束，避免任务永久悬挂
+                if (Date.now() - taskStartedAt > MAX_TASK_MS) {
+                  forcedEnd = true;
+                  try { await reader.cancel(); } catch (_) { /* ignore */ }
+                  break;
+                }
+              }
+              continue;
+            }
+            if (raced.type === 'error') break; // 流被 cancel 或网络错误
+            const { done, value } = raced.v;
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
-            // 流式生成期间心跳：每 30 秒刷新一次 chat-status，避免长输出被前端误判为中断
-            if (Date.now() - lastBeat > 30000) {
-              lastBeat = Date.now();
-              await store.setChatStatus(id, {
-                status: 'running',
-                startedAt,
-                stage: 'thinking',
-                round: round + 1,
-                note: `第 ${round + 1} 轮生成中（已输出 ${roundText.length} 字）…`,
-                updatedAt: Date.now(),
-              });
-            }
             let idx;
             while ((idx = buffer.indexOf('\n\n')) >= 0) {
               const chunk = buffer.slice(0, idx);
@@ -687,6 +707,23 @@ async function streamChatAction(request, store, id) {
           }
           lastRoundText = roundText;
           allRoundTexts.push(roundText);
+
+          if (forcedEnd) {
+            // 任务超时：记录中断并结束整个对话（跳过部署），避免前端永久等待
+            const curT = await store.getProject(id);
+            curT.history.push({
+              role: 'system',
+              content: `⚠️ 对话超时（超过 ${Math.round(MAX_TASK_MS / 60000)} 分钟），已自动结束；已发送的内容保留在记录中，可重新发送或拆分需求。`,
+            });
+            curT.updatedAt = Date.now();
+            await store.saveProject(curT);
+            await store.clearChatStatus(id);
+            send('error', {
+              error: `任务超时（${Math.round(MAX_TASK_MS / 60000)} 分钟上限），请重试或拆分需求`,
+            });
+            controller.close();
+            return;
+          }
 
           // 保存本论回复
           const cur = await store.getProject(id);

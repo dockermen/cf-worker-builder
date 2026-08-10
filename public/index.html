@@ -1117,22 +1117,17 @@ async function watchChatStatus(id) {
             }
             toast('💬 后台对话已完成，记录已刷新');
           } else if (isChatStale(r2.status)) {
-            // 长时间无心跳：请求大概率已中断，及时提示，避免一直显示“部署中”
-            clearInterval(state.chatWatch);
-            state.chatWatch = null;
-            showChatResume('⚠️ 上次对话已中断（长时间无进展），已发送的内容保留在记录中，可重新发送');
-            const d = await api(`/api/projects/${id}`).catch(() => null);
-            if (d && state.project && state.project.id === id) {
-              state.project = d.project;
-              renderProject(d.project);
-            }
+            // 长时间无心跳 ≠ 中断：Workers 等待模型输出时定时器冻结，无进展属正常现象。
+            // 继续等待轮询，直到任务真正结束（状态清除）或用户重发。
+            showChatResume('⏳ 任务仍在后台运行（模型可能正在思考，长时间无输出属正常），完成后自动刷新；若长时间无结果可重新发送');
           } else {
             renderChatResume(r2.status); // 实时进度
           }
         } catch (_) { /* ignore */ }
       }, 2500);
     } else if (r.status.status === 'running') {
-      showChatResume('⚠️ 上次对话已中断（长时间无进展），已发送的内容保留在记录中，可重新发送');
+      // 残留的 running 状态：任务可能仍在执行或已结束（状态过期），提示等待而非判定中断
+      showChatResume('⏳ 后台任务仍在进行（或上次任务状态未清理），请稍候；若长时间无结果可重新发送');
     }
   } catch (_) { /* ignore */ }
 }
