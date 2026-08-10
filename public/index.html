@@ -883,22 +883,32 @@ function renderMessages(history) {
       div.innerHTML = renderMarkdown(m.content);
       box.appendChild(div);
     } else if (m.role === 'system' && /^🔧\s*工具结果/.test(m.content)) {
-      // 工具结果：折叠卡片（摘要 + 点击展开详情），避免刷屏
-      const firstLine = (m.content.split('\n')[0] || '').trim();
-      let rest = m.content.slice(firstLine.length).trim();
+      // 工具结果：折叠卡片（摘要 + 点击展开详情），避免刷屏。
+      // 消息可能无换行（HTML 被压缩成一行），需按「代码块标记位置」切分头/正文，摘要再做字符截断。
+      const content = m.content;
+      const codeIdx = content.indexOf('```');
+      const head = (codeIdx >= 0 ? content.slice(0, codeIdx) : content).trim();
+      let rest = codeIdx >= 0 ? content.slice(codeIdx) : '';
       // 去掉包裹正文的 ``` 代码块标记，只展示实际内容
-      rest = rest.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '').replace(/\n?```\s*$/, '');
+      rest = rest.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+      // 摘要：头部截断（最长 150 字符），其余进详情
+      let summaryText = head.replace(/^🔧\s*/, '');
+      let detailText = rest;
+      if (summaryText.length > 150) {
+        detailText = '…' + summaryText.slice(150) + (rest ? '\n\n' + rest : '');
+        summaryText = summaryText.slice(0, 150) + '…';
+      }
       const div = document.createElement('div');
       div.className = 'msg system tool-result collapsed';
       const summary = document.createElement('div');
       summary.className = 'tool-summary';
-      summary.innerHTML = '<span>🛠️ ' + esc(firstLine.replace(/^🔧\s*/, '')) + '</span><span class="tool-toggle">点击展开详情</span>';
+      summary.innerHTML = '<span>🛠️ ' + esc(summaryText) + '</span><span class="tool-toggle">点击展开详情</span>';
       const detail = document.createElement('div');
       detail.className = 'tool-detail hidden';
-      if (rest) {
+      if (detailText) {
         const pre = document.createElement('pre');
         pre.className = 'tool-pre';
-        pre.textContent = rest;
+        pre.textContent = detailText;
         detail.appendChild(pre);
       }
       summary.addEventListener('click', () => {
@@ -1224,7 +1234,14 @@ async function watchChatStatus(id) {
             }
             state.busy = false;
             setBusy(false);
-            toast('💬 后台对话已完成，记录已刷新');
+            // 若最近记录里有「已自动部署」，明确提示部署成功；否则提示对话完成
+            const hist = (d.project && d.project.history) || [];
+            let deployUrl = '';
+            for (let i = hist.length - 1; i >= 0 && i >= hist.length - 6; i--) {
+              const mm = (hist[i].content || '').match(/✅\s*已自动部署到：\s*(\S+)/);
+              if (mm) { deployUrl = mm[1]; break; }
+            }
+            toast(deployUrl ? '✅ 已自动部署：' + deployUrl : '💬 后台对话已完成，记录已刷新');
           } else if (isChatStale(r2.status)) {
             // 长时间无心跳 ≠ 中断：Workers 等待模型输出时定时器冻结，无进展属正常现象。
             // 继续等待轮询，直到任务真正结束（状态清除）或用户重发。
