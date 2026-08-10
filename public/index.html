@@ -390,7 +390,7 @@
       <div id="chatResume" class="chat-resume hidden"></div>
       <div id="messages" class="messages"></div>
       <div class="composer">
-        <textarea id="input" rows="3"
+        <textarea id="input" rows="3" inputmode="text" autocapitalize="sentences" autocorrect="on" spellcheck="true" enterkeyhint="send"
           placeholder="描述你想构建的 Worker，例如：做一个天气查询 API，GET /weather?city=北京 返回 JSON；然后跟我说「加一个 /about 页面」来继续修改…"></textarea>
         <div class="composer-bar">
           <label class="check"><input type="checkbox" id="autoDeploy" checked /> 自动部署</label>
@@ -479,10 +479,12 @@
 
     <h4>③ 访问密码（进入构建器页面时需要）</h4>
     <label>旧密码
-      <input id="setOldPwd" type="password" placeholder="当前访问密码" autocomplete="off" />
+      <input id="setOldPwd" type="password" placeholder="当前访问密码" autocomplete="current-password"
+        autocapitalize="off" autocorrect="off" spellcheck="false" style="font-size:16px" />
     </label>
     <label>新密码
-      <input id="setNewPwd" type="password" placeholder="新密码（至少 4 位）" autocomplete="off" />
+      <input id="setNewPwd" type="password" placeholder="新密码（至少 4 位）" autocomplete="new-password"
+        autocapitalize="off" autocorrect="off" spellcheck="false" style="font-size:16px" />
     </label>
     <div>
       <button id="btnChangePwd" type="button" class="btn ghost">修改访问密码</button>
@@ -584,7 +586,9 @@
     <div class="lock-logo">🔒</div>
     <h2>Worker 在线构建器</h2>
     <p>请输入访问密码以进入构建器</p>
-    <input id="lockPassword" type="password" placeholder="访问密码" autocomplete="current-password" />
+    <input id="lockPassword" type="password" placeholder="访问密码"
+      autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false"
+      enterkeyhint="done" inputmode="text" style="font-size:16px" />
     <button id="btnLockLogin" type="button" class="btn primary">进入构建器</button>
     <p class="hint">默认密码 123456，进入后可在「设置 → 访问密码」中修改</p>
   </div>
