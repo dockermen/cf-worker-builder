@@ -642,10 +642,24 @@ async function streamChatAction(request, store, id) {
           const reader = llmRes.body.getReader();
           let buffer = '';
           let roundText = '';
+          let lastBeat = Date.now();
+          const startedAt = (await store.getChatStatus(id))?.startedAt || Date.now();
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
+            // 流式生成期间心跳：每 30 秒刷新一次 chat-status，避免长输出被前端误判为中断
+            if (Date.now() - lastBeat > 30000) {
+              lastBeat = Date.now();
+              await store.setChatStatus(id, {
+                status: 'running',
+                startedAt,
+                stage: 'thinking',
+                round: round + 1,
+                note: `第 ${round + 1} 轮生成中（已输出 ${roundText.length} 字）…`,
+                updatedAt: Date.now(),
+              });
+            }
             let idx;
             while ((idx = buffer.indexOf('\n\n')) >= 0) {
               const chunk = buffer.slice(0, idx);

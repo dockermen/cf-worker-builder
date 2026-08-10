@@ -1090,9 +1090,9 @@ function renderChatResume(status) {
 }
 
 function isChatStale(status) {
-  // 以「最后心跳时间 updatedAt」判断：超过 90 秒无进展视为请求已中断（Worker 可能被终止，状态残留）
+  // 以「最后心跳时间 updatedAt」判断：超过 150 秒无进展视为请求已中断（模型长输出期间每 30 秒有心跳）
   const last = status.updatedAt || status.startedAt || Date.now();
-  return Date.now() - last > 90000;
+  return Date.now() - last > 150000;
 }
 
 async function watchChatStatus(id) {
