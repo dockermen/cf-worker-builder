@@ -170,12 +170,15 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
 ### 配置步骤（一次性）
 
 1. **推送仓库到 cnb.cool**：在 [cnb.cool](https://cnb.cool) 创建仓库（可导入 GitHub 或直接新建），把本仓库代码推上去（`git remote add origin https://cnb.cool/<用户名>/<仓库名>.git && git push -u origin main`）。仓库中必须包含根目录 `.cnb.yml` 与 `agent-runner/` 目录。
-2. **获取 CNB API Token**：cnb.cool → 头像 → 设置 → 访问令牌 → 创建（勾选对应仓库的流水线触发权限，如 `repo-cnb-trigger`）。也可直接用 CNB 流水线内置注入的 `CNB_TOKEN`。
-3. **构建器设置**：「设置 → ④ CNB 云构建」填写：
+2. **获取 CNB API Token**：cnb.cool → 头像 → 设置 → 访问令牌 → 创建。**必须勾选对应仓库的 `repo-cnb-trigger` 权限（读写 rw）**，否则触发会报 `403 Missing required scopes: repo-cnb-trigger:rw`。
+3. **开启仓库自动触发**：cnb.cool 仓库 → **设置 → 云原生构建 → 勾选「允许自动触发」**。未开启时构建日志页会提示「当前仓库未允许自动触发云原生构建」，OPENAPI 触发不会真正执行流水线。
+4. **构建器设置**：「设置 → ④ CNB 云构建」填写：
    - **CNB 仓库路径**：如 `chenzhilong/cf-worker-builder`（与 cnb.cool 仓库路径一致）；
    - **CNB API Token**：上一步创建的令牌；
    - **触发分支**：默认 `main`。
-4. 保存后，对话框发送消息即自动走「后台长任务」模式（顶部显示 CNB 排队/执行进度，可切换页面，完成后自动刷新）。未配置 CNB 时仍使用内置流式对话。
+5. 保存后，对话框发送消息即自动走「后台长任务」模式（顶部显示 CNB 排队/执行进度，可切换页面，完成后自动刷新）。未配置 CNB 时仍使用内置流式对话。
+
+> 💡 排查提示：触发失败时构建器会返回具体原因。`403` 说明 Token 权限不足（需 `repo-cnb-trigger:rw`）；「CNB 未创建构建」说明仓库未开启「允许自动触发」。
 
 ### 安全说明
 
@@ -226,6 +229,7 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
   - 安全设计：LLM Key / Cloudflare Token 不进 CNB 环境变量，任务快照存构建器 KV，runner 用一次性 token 拉取，TTL 2 小时自动清理
   - 设置面板新增「④ CNB 云构建」配置（仓库路径 / API Token / 触发分支）；未配置 CNB 时自动回退内置流式对话
   - `agent.js` 支持自定义 LLM 超时（默认 90 秒，CNB runner 放宽到 5 分钟）；`deploy.js` 支持自定义 API Base（本地联调）
+  - CNB 触发校验增强：校验 `success` 与构建号 `sn`，Token 缺 `repo-cnb-trigger:rw`、仓库未开启「允许自动触发」时给出明确错误并附构建日志链接；`.cnb.yml` 改用字符串命令形式
 - **2026-08-08**：v1.9.5 项目记忆详细文档化并注入代码生成
   - 记忆升级为结构化 Markdown 文档：一、需求 二、功能 三、技术信息 四、变更记录（保留历史并追加每次改动）
   - 关联导入时 LLM 分析代码生成详细记忆文档；部署成功后 LLM 整合需求/代码更新文档
