@@ -163,7 +163,9 @@
   .msg .codeblock pre { max-height: 280px; overflow: auto; }
   .msg .codeblock.collapsed pre { display: none; }
   /* 工具结果折叠卡片：默认摘要，点击展开详情 */
-  .msg.tool-result { border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); padding: 0; overflow: hidden; }
+  .msg.tool-result { border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); padding: 0; }
+  /* 注意：此处不能用 overflow:hidden —— 在 flex 列容器中会触发高度塌陷（卡片只剩 2px 边框横线） */
+  .msg.tool-result .tool-summary:first-child { border-radius: 10px 10px 0 0; }
   .tool-summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; font-size: 13px; color: var(--text); }
   .tool-summary:hover { background: rgba(255,255,255,.04); }
   .tool-toggle { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
