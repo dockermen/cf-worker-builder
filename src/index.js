@@ -594,7 +594,8 @@ async function asyncChatAction(request, store, id, baseUrl) {
       taskToken,
       baseUrl,
     });
-    task.cnbSn = r?.sn || r?.data?.sn || r?.result?.sn || '';
+    task.cnbSn = r.sn || '';
+    task.buildLogUrl = r.buildLogUrl || '';
     task.status = 'running';
     await store.saveTask(task);
   } catch (e) {
@@ -606,6 +607,9 @@ async function asyncChatAction(request, store, id, baseUrl) {
     return json({ error: e.message }, 502);
   }
 
+  const queuedNote = `任务已提交到 CNB 云构建${task.cnbSn ? `（SN ${task.cnbSn}）` : ''}，排队等待执行…${
+    task.buildLogUrl ? ` 日志：${task.buildLogUrl}` : ''
+  }`;
   await store.setChatStatus(id, {
     status: 'running',
     executor: 'cnb',
@@ -613,7 +617,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
     startedAt: Date.now(),
     stage: 'queued',
     round: 0,
-    note: '任务已提交到 CNB 云构建，排队等待执行…',
+    note: queuedNote,
     updatedAt: Date.now(),
   });
   return json({ ok: true, taskId, status: 'queued' });
@@ -678,7 +682,8 @@ async function finishAsyncTask(store, task, payload) {
   const error = String(payload.error || '').trim();
   const reply = String(payload.reply || '').trim();
   if (error) {
-    project.history.push({ role: 'system', content: `⚠️ 对话任务执行失败：${error.slice(0, 500)}` });
+    const logLink = task.buildLogUrl ? `（构建日志：${task.buildLogUrl}）` : '';
+    project.history.push({ role: 'system', content: `⚠️ 对话任务执行失败：${error.slice(0, 500)}${logLink}` });
   } else {
     if (reply) project.history.push({ role: 'assistant', content: reply });
     const code = payload.code || null;

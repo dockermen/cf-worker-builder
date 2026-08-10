@@ -33,10 +33,23 @@ export async function triggerCnbBuild({ repo, token, branch = 'main', taskId, ta
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(
-      `触发 CNB 构建失败（${res.status}）：${JSON.stringify(data).slice(0, 300)}（请检查设置中的 CNB 仓库路径与 Token）`
+      `触发 CNB 构建失败（${res.status}）：${JSON.stringify(data).slice(0, 300)}（请检查设置中的 CNB 仓库路径与 Token 权限）`
     );
   }
-  return data;
+  // 关键校验：HTTP 200 只代表请求被接受，success=false 或缺少 sn 说明流水线并未真正创建。
+  // 最常见原因：仓库「设置 → 云原生构建」未勾选「允许自动触发」。
+  if (data.success === false || !data.sn) {
+    throw new Error(
+      `CNB 未创建构建：${data.message || '仓库可能未开启云原生构建自动触发'}` +
+        '（请到 cnb.cool 仓库 → 设置 → 云原生构建 → 勾选「允许自动触发」，并确认 Token 有流水线触发权限；构建日志：https://cnb.cool/' +
+        `${repo}/-/build/logs）`
+    );
+  }
+  return {
+    sn: data.sn,
+    buildLogUrl: data.buildLogUrl || `https://cnb.cool/${repo}/-/build/logs`,
+    message: data.message || '',
+  };
 }
 
 /** 查询 CNB 构建状态（sn 为构建号），用于诊断与日志链接 */

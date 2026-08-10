@@ -7,10 +7,14 @@
 # runner（agent-runner/run.js）在 node:20 容器中执行完整的
 # 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」Agent 循环，无 Workers 长连接超时限制，
 # 结果通过回调写回构建器。
+#
+# 注意：仓库需在 cnb.cool「仓库设置 → 云原生构建」中勾选「允许自动触发」，
+# 否则 OPENAPI 触发不会真正执行流水线。
 
 api_trigger_builder:
   - docker:
       image: node:20
+      volumes:
+        - /root/.npm:copy-on-write
     stages:
-      - name: 执行构建器 Agent 任务
-        script: node agent-runner/run.js
+      - node agent-runner/run.js
