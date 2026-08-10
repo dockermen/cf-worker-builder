@@ -4,6 +4,8 @@
 #   POST https://api.cnb.cool/{repo}/-/build/start
 #   {"event": "api_trigger_builder", "branch": "main", "env": {"TASK_ID": "...", "TASK_TOKEN": "...", "BUILDER_BASE_URL": "..."}}
 #
+# 重要：api_trigger 事件必须配置在【分支块】下（main: / $:），不能放在顶层，
+# 否则 CNB 会报「分支 main 和 $ 下无 api_trigger_builder 事件配置」。
 # runner（agent-runner/run.js）在 node:20 容器中执行完整的
 # 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」Agent 循环，无 Workers 长连接超时限制，
 # 结果通过回调写回构建器。
@@ -11,10 +13,11 @@
 # 注意：仓库需在 cnb.cool「仓库设置 → 云原生构建」中勾选「允许自动触发」，
 # 否则 OPENAPI 触发不会真正执行流水线。
 
-api_trigger_builder:
-  - docker:
-      image: node:20
-      volumes:
-        - /root/.npm:copy-on-write
-    stages:
-      - node agent-runner/run.js
+main:
+  api_trigger_builder:
+    - docker:
+        image: node:20
+        volumes:
+          - /root/.npm:copy-on-write
+      stages:
+        - node agent-runner/run.js
