@@ -32,12 +32,12 @@ jobs:
     timeout-minutes: 360 # GitHub Actions 单任务最长 6 小时
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: 安装 Node.js 20
-        uses: actions/setup-node@v4
+      - name: 安装 Node.js 22 (LTS)
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - name: 执行构建器 Agent 任务
         env:
