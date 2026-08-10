@@ -84,6 +84,22 @@ async function callLLM(settings, messages) {
   throw lastErr;
 }
 
+/**
+ * LLM 长任务心跳：生成期间每 2 分钟上报一次进度（同时续期任务 KV 与 chat-status），
+ * 防止构建器侧状态 KV 过期导致前端误判「任务已完成」。
+ */
+async function callLLMWithBeat(settings, messages) {
+  const beat = setInterval(() => {
+    reportProgress({ stage: 'thinking', note: '模型生成中（长任务心跳，请稍候）…' }).catch(() => {});
+  }, 120000);
+  beat.unref?.();
+  try {
+    return await callLLM(settings, messages);
+  } finally {
+    clearInterval(beat);
+  }
+}
+
 /** 智能冒烟测试：探测代码中的路由，找到第一个正常响应（与构建器逻辑一致） */
 async function smartSmokeTest(url, code) {
   const routes = extractRoutes(code || '');
@@ -121,7 +137,7 @@ async function main() {
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     await reportProgress({ stage: 'thinking', round: round + 1, note: `第 ${round + 1} 轮生成中…` });
-    const reply = await callLLM(task.settings, messages);
+    const reply = await callLLMWithBeat(task.settings, messages);
     messages.push({ role: 'assistant', content: reply });
     allRoundTexts.push(reply);
     log(`第 ${round + 1} 轮完成，输出 ${reply.length} 字`);

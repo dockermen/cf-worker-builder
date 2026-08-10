@@ -582,7 +582,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
     cnbSn: '',
     status: 'queued',
   };
-  await store.saveTask(task, 7200);
+  await store.saveTask(task);
 
   // 触发 CNB 流水线（事件 api_trigger_builder 需在仓库 .cnb.yml 中定义）
   try {
@@ -596,7 +596,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
     });
     task.cnbSn = r?.sn || r?.data?.sn || r?.result?.sn || '';
     task.status = 'running';
-    await store.saveTask(task, 7200);
+    await store.saveTask(task);
   } catch (e) {
     await store.deleteTask(taskId);
     project.history.push({ role: 'system', content: `⚠️ CNB 任务提交失败：${e.message}` });

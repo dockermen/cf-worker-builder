@@ -70,11 +70,11 @@ export function makeStore(kv) {
       return raw || null;
     },
 
-    async saveTask(task, ttl = 7200) {
+    async saveTask(task, ttl = 14400) {
       await kv.put(`task:${task.id}`, JSON.stringify(task), { expirationTtl: ttl });
     },
 
-    async touchTask(id, ttl = 7200) {
+    async touchTask(id, ttl = 14400) {
       // 续期：任务进行中防止 KV 过期（进度上报时调用）
       const task = await this.getTask(id);
       if (task) await this.saveTask(task, ttl);
