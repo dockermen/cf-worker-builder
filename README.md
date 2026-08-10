@@ -94,8 +94,12 @@ npx wrangler kv namespace create BUILDER_KV
 # 3.2 登录（首次部署需要，之后由构建器自己保存的 Token 承担运行时登录态）
 npx wrangler login
 
-# 3.3 发布
-npm run deploy
+# 3.3 生产配置（真实 KV id 与自定义域）
+# 复制 wrangler.toml 为 wrangler.prod.toml，填入真实 KV id（与可选自定义域路由），
+# 并把 wrangler.prod.toml 加入 .gitignore（避免泄露）
+
+# 3.4 发布
+npx wrangler deploy --config wrangler.prod.toml
 # 发布后访问 https://cf-worker-builder.<你的子域>.workers.dev
 ```
 
