@@ -761,6 +761,7 @@ async function refreshProjects() {
   state.projects = data.projects;
   renderSidebar();
   updateCfgHint();
+  updateChatModeUI();
 }
 
 /* ---------------- 渲染：工作区 ---------------- */
@@ -1747,6 +1748,7 @@ async function initApp() {
   state.projects = data.projects;
   renderSidebar();
   updateCfgHint();
+  updateChatModeUI();
   if (data.projects.length) {
     await openProject(data.projects[0].id);
   } else {
