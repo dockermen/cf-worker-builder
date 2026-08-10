@@ -480,10 +480,7 @@
     </p>
 
     <h4>④ 后台执行器 · GitHub Actions（推荐，解决长对话超时/中断）</h4>
-    <div style="display:flex;flex-direction:column;gap:8px;margin:4px 0 12px">
-      <label class="check"><input type="radio" name="chatMode" id="setModeGithub" checked /> GitHub Actions 后台执行（可切页面、无超时限制，推荐）</label>
-      <label class="check"><input type="radio" name="chatMode" id="setModeStream" /> 构建器内置流式对话（实时打字机）</label>
-    </div>
+    <label class="check" style="margin:4px 0 12px;font-size:13.5px"><input type="checkbox" id="setGhEnabled" checked /> 使用 GitHub Actions 后台执行（勾选后对话提交到 GitHub Actions 后台执行，可切换页面、无超时限制；取消则使用构建器内置流式对话）</label>
     <p class="hint" style="margin-top:0">
       🚀 启用后，对话将提交到 <a href="https://github.com" target="_blank" rel="noopener">GitHub Actions</a>
       （<code>workflow_dispatch</code>，单任务最长 6 小时）后台执行：LLM 生成 → 工具调用 → 部署 → 冒烟测试，结果自动写回；
@@ -1231,8 +1228,7 @@ function openSettings() {
   $('#setCfToken').placeholder = s.hasCfToken ? `已保存：${s.cfTokenMasked}（留空则保持不变）` : 'Cloudflare API Token';
   $('#setAccountId').value = s.cfAccountId || '';
   $('#cfTestResult').textContent = s.cfSubdomain ? `子域：${s.cfSubdomain}.workers.dev` : '';
-  $('#setModeGithub').checked = s.ghEnabled !== false;
-  $('#setModeStream').checked = s.ghEnabled === false;
+  $('#setGhEnabled').checked = s.ghEnabled !== false;
   $('#setGhRepo').value = s.ghRepo || '';
   $('#setGhToken').value = '';
   $('#setGhToken').placeholder = s.ghTokenMasked ? `已保存：${s.ghTokenMasked}（留空则保持不变）` : 'ghp_xxx';
@@ -1352,7 +1348,7 @@ async function saveSettings() {
     openaiApiType: $('#setApiType').value,
     cfToken: $('#setCfToken').value.trim(),
     cfAccountId: $('#setAccountId').value.trim(),
-    ghEnabled: $('#setModeGithub').checked,
+    ghEnabled: $('#setGhEnabled').checked,
     ghRepo: $('#setGhRepo').value.trim(),
     ghToken: $('#setGhToken').value.trim(),
     ghRef: $('#setGhRef').value.trim() || 'main',
