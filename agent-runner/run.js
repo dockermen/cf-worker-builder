@@ -25,6 +25,7 @@ import { callChatCompletion } from '../src/agent.js';
 import { extractCode } from '../src/util.js';
 import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes } from '../src/tools.js';
 import { deployWorker } from '../src/deploy.js';
+import { browserFetchText } from './browser.js';
 
 const TASK_ID = process.env.TASK_ID || '';
 const TASK_TOKEN = process.env.TASK_TOKEN || '';
@@ -258,7 +259,23 @@ async function main() {
         round: round + 1,
         note: `正在执行工具：${String(spec).split('\n')[0] || 'HTTP 请求'}`,
       });
-      const r = await executeHttpTest(spec);
+      let r = await executeHttpTest(spec);
+      // Cloudflare 人机验证挑战页：普通请求被拦，自动用 Playwright 无头浏览器重抓真实内容
+      if (r && !r.error && r.challenge && r.url) {
+        await reportProgress({ stage: 'tool', round: round + 1, note: `目标站有人机验证，正在用浏览器（Playwright）抓取：${r.url}` });
+        log('检测到 Cloudflare 挑战，尝试浏览器抓取:', r.url);
+        try {
+          const b = await browserFetchText(r.url, { waitMs: 40000, maxWaitChallengeMs: 15000 });
+          if (b && !b.error && !b.challenge) {
+            r = { ...r, ...b, viaBrowser: true };
+            log('浏览器抓取成功:', b.status, b.url);
+          } else {
+            log('浏览器抓取仍被挑战拦截（保留原结果）:', b && b.status);
+          }
+        } catch (e) {
+          log('浏览器抓取失败（保留原结果）:', e && e.message);
+        }
+      }
       toolResults.push(r);
       messages.push({ role: 'system', content: formatToolResult(r, toolResults.length) });
       log('工具结果:', r.status || r.error, r.url || '');

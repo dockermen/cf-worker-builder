@@ -74,6 +74,24 @@ export function validateTargetUrl(url) {
   return { ok: true };
 }
 
+/** 浏览器 UA（模拟真实浏览器，降低被简单 UA 反爬拦截的概率） */
+const BROWSER_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+/** 判断是否为 Cloudflare 人机验证挑战页（403/503 + "Just a moment..." / challenges.cloudflare.com） */
+export function isCloudflareChallenge(result) {
+  if (!result || result.error) return false;
+  const status = Number(result.status);
+  if (status !== 403 && status !== 503) return false;
+  const body = String(result.body || '');
+  return (
+    /just a moment/i.test(body) ||
+    /challenges\.cloudflare\.com/i.test(body) ||
+    /cf-chl-|cf-chl_/i.test(body) ||
+    /enable javascript and cookies/i.test(body)
+  );
+}
+
 /** 执行一次 HTTP 请求（10 秒超时，响应体截断） */
 export async function executeHttpTest(specOrSpecText) {
   const parsed =
@@ -95,9 +113,16 @@ export async function executeHttpTest(specOrSpecText) {
   }
 
   try {
+    // 默认模拟浏览器请求头（目标站常按 UA/Accept 判定反爬），用户显式指定的头优先
+    const headers = {
+      'User-Agent': BROWSER_UA,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      ...(parsed.headers || {}),
+    };
     let res = await fetch(target, {
       method,
-      headers: parsed.headers,
+      headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : parsed.body || undefined,
       signal: controller.signal,
       redirect: 'follow',
@@ -113,7 +138,7 @@ export async function executeHttpTest(specOrSpecText) {
       res = fallbackRes;
     }
     const bodyText = await res.text().catch(() => '');
-    return {
+    const result = {
       method: fallback ? 'GET(降级)' : parsed.method,
       url: parsed.url,
       status: res.status,
@@ -122,6 +147,8 @@ export async function executeHttpTest(specOrSpecText) {
       fallback,
       body: bodyText.slice(0, 3000),
     };
+    result.challenge = isCloudflareChallenge(result);
+    return result;
   } catch (e) {
     return {
       error: e && e.name === 'AbortError' ? '请求超时（15 秒）' : String(e.message || '请求失败'),
@@ -135,6 +162,10 @@ export async function executeHttpTest(specOrSpecText) {
 export function formatToolResult(result, index) {
   if (!result) return '';
   if (result.error) return `🔧 工具结果（#${index || 1}）请求失败：${result.error}`;
+  // Cloudflare 人机验证挑战页：不是网站不可访问，给出明确指引
+  if (result.challenge) {
+    return `🔧 工具结果（#${index || 1}）[${result.method} ${result.url}]：HTTP ${result.status} — ⚠️ 目标站启用了 Cloudflare 人机验证（JS Challenge，"Just a moment..."），普通请求拿不到真实内容，**不代表网站不可访问**。系统将自动尝试用浏览器（Playwright）抓取；若仍失败请勿重复请求同一 URL，可基于已有信息继续，或改用 MARKDOWN 模式获取网页资料。`;
+  }
   const bodyPreview = (result.body || '').slice(0, 1500);
   let tip = '';
   if (result.status === 429) {

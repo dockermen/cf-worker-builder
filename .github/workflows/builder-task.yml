@@ -39,6 +39,11 @@ jobs:
         with:
           node-version: 22
 
+      - name: 安装 Playwright 浏览器（人机验证页自动抓取）
+        run: |
+          npm i playwright --no-save --no-package-lock --silent
+          npx playwright install --with-deps chromium
+
       - name: 执行构建器 Agent 任务
         env:
           TASK_ID: ${{ github.event.inputs.task_id }}
