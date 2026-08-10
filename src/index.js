@@ -23,6 +23,7 @@ import {
 import { login, checkAuth, changePassword } from './auth.js';
 import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes } from './tools.js';
 import { triggerCnbBuild } from './cnb.js';
+import { triggerGithubWorkflow } from './github.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode, listWorkers } from './deploy.js';
 
 export default {
@@ -105,6 +106,11 @@ async function handleApi(request, url, env, store) {
         cnbFallbackIp: settings.cnbFallbackIp || '',
         cnbTokenMasked: maskKey(settings.cnbToken),
         hasCnb: !!(settings.cnbRepo && settings.cnbToken),
+        // GitHub Actions（推荐的后台长任务执行器）
+        ghRepo: settings.ghRepo || '',
+        ghRef: settings.ghRef || 'main',
+        ghTokenMasked: maskKey(settings.ghToken),
+        hasGh: !!(settings.ghRepo && settings.ghToken),
       },
       oauth: publicOAuth(oauth),
       projects,
@@ -128,6 +134,10 @@ async function handleApi(request, url, env, store) {
       cnbToken: String(body.cnbToken || '').trim() || settings.cnbToken || '',
       cnbBranch: String(body.cnbBranch || '').trim() || settings.cnbBranch || 'main',
       cnbFallbackIp: String(body.cnbFallbackIp || '').trim() || settings.cnbFallbackIp || '',
+      // GitHub Actions（推荐）
+      ghRepo: String(body.ghRepo || '').trim() || settings.ghRepo || '',
+      ghToken: String(body.ghToken || '').trim() || settings.ghToken || '',
+      ghRef: String(body.ghRef || '').trim() || settings.ghRef || 'main',
     };
 
     if (!next.openaiBaseUrl || !next.openaiKey || !next.openaiModel) {
@@ -164,6 +174,10 @@ async function handleApi(request, url, env, store) {
         cnbFallbackIp: next.cnbFallbackIp,
         cnbTokenMasked: maskKey(next.cnbToken),
         hasCnb: !!(next.cnbRepo && next.cnbToken),
+        ghRepo: next.ghRepo,
+        ghRef: next.ghRef,
+        ghTokenMasked: maskKey(next.ghToken),
+        hasGh: !!(next.ghRepo && next.ghToken),
       },
     });
   }
@@ -530,8 +544,8 @@ async function asyncChatAction(request, store, id, baseUrl) {
   if (!settings.openaiBaseUrl || !settings.openaiKey || !settings.openaiModel) {
     return json({ error: '请先在「设置」中配置 OpenAI Base URL、Key 和模型' }, 400);
   }
-  if (!settings.cnbRepo || !settings.cnbToken) {
-    return json({ error: '尚未配置 CNB 云构建（设置 → ④ CNB：仓库路径 + API Token），无法使用后台长任务对话；或使用普通流式对话' }, 400);
+  if (!settings.ghRepo || !settings.ghToken) {
+    return json({ error: '尚未配置 GitHub Actions（设置 → ④ 后台执行器：仓库路径 + PAT），无法使用后台长任务对话；或切换为普通流式对话' }, 400);
   }
 
   // 用户消息立即持久化（重试去重；即使后续失败，切换页面后记录也不丢失）
@@ -544,7 +558,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
   await store.saveProject(project);
 
   await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
-  await store.setChatStatus(id, { status: 'running', executor: 'cnb', taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
+  await store.setChatStatus(id, { status: 'running', executor: 'github', taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
 
   // 解析 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
   let cf;
@@ -562,13 +576,14 @@ async function asyncChatAction(request, store, id, baseUrl) {
     return json({ error: `Cloudflare 凭据不可用：${e.message}` }, 400);
   }
 
-  // 任务快照：一次性 token，LLM Key / CF Token 只经构建器 → runner 的单次拉取，不进 CNB 环境变量
+  // 任务快照：一次性 token，LLM Key / CF Token 只经构建器 → runner 的单次拉取，不进 GitHub 环境/日志
   const taskId = crypto.randomUUID();
   const taskToken = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
   const task = {
     id: taskId,
     projectId: id,
     token: taskToken,
+    executor: 'github',
     createdAt: Date.now(),
     autoDeploy: body.autoDeploy !== false,
     userMessage: message,
@@ -582,41 +597,37 @@ async function asyncChatAction(request, store, id, baseUrl) {
       openaiApiType: settings.openaiApiType || 'chat',
     },
     cf,
-    cnbSn: '',
+    ghRunUrl: '',
     status: 'queued',
   };
   await store.saveTask(task);
 
-  // 触发 CNB 流水线（事件 api_trigger_builder 需在仓库 .cnb.yml 中定义）
+  // 触发 GitHub Actions workflow_dispatch（runner 在 .github/workflows/builder-task.yml）
   try {
-    const r = await triggerCnbBuild({
-      repo: settings.cnbRepo,
-      token: settings.cnbToken,
-      branch: settings.cnbBranch || 'main',
+    await triggerGithubWorkflow({
+      repo: settings.ghRepo,
+      token: settings.ghToken,
+      ref: settings.ghRef || 'main',
       taskId,
       taskToken,
       baseUrl,
-      fallbackIp: settings.cnbFallbackIp || '',
     });
-    task.cnbSn = r.sn || '';
-    task.buildLogUrl = r.buildLogUrl || '';
+    task.ghRunUrl = `https://github.com/${settings.ghRepo}/actions`;
     task.status = 'running';
     await store.saveTask(task);
   } catch (e) {
     await store.deleteTask(taskId);
-    project.history.push({ role: 'system', content: `⚠️ CNB 任务提交失败：${e.message}` });
+    project.history.push({ role: 'system', content: `⚠️ GitHub Actions 任务提交失败：${e.message}` });
     project.updatedAt = Date.now();
     await store.saveProject(project);
     await store.clearChatStatus(id);
     return json({ error: e.message }, 502);
   }
 
-  const queuedNote = `任务已提交到 CNB 云构建${task.cnbSn ? `（SN ${task.cnbSn}）` : ''}，排队等待执行…${
-    task.buildLogUrl ? ` 日志：${task.buildLogUrl}` : ''
-  }`;
+  const queuedNote = `任务已提交到 GitHub Actions（${settings.ghRepo}），排队等待执行… 运行日志：${task.ghRunUrl}`;
   await store.setChatStatus(id, {
     status: 'running',
-    executor: 'cnb',
+    executor: 'github',
     taskId,
     startedAt: Date.now(),
     stage: 'queued',
@@ -656,7 +667,7 @@ async function taskProgressAction(store, taskId, body) {
   await store.touchTask(taskId);
   await store.setChatStatus(task.projectId, {
     status: 'running',
-    executor: 'cnb',
+    executor: task.executor || 'github',
     taskId,
     startedAt: Date.now(),
     stage: String(body.stage || 'running'),
@@ -686,7 +697,7 @@ async function finishAsyncTask(store, task, payload) {
   const error = String(payload.error || '').trim();
   const reply = String(payload.reply || '').trim();
   if (error) {
-    const logLink = task.buildLogUrl ? `（构建日志：${task.buildLogUrl}）` : '';
+    const logLink = task.ghRunUrl ? `（运行日志：${task.ghRunUrl}）` : (task.buildLogUrl ? `（构建日志：${task.buildLogUrl}）` : '');
     project.history.push({ role: 'system', content: `⚠️ 对话任务执行失败：${error.slice(0, 500)}${logLink}` });
   } else {
     if (reply) project.history.push({ role: 'assistant', content: reply });

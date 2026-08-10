@@ -14,7 +14,7 @@
 | 2. 以项目为单位创建，自动发布并给地址 | 项目 CRUD + 对话生成代码 + 自动部署到 workers.dev 并返回 URL，后续可在对话框继续提需求迭代修改 |
 | 3. 内置 Cloudflare 登录态 | 支持「在线登录」（设备码 OAuth，类似 `wrangler login --device`，零配置浏览器授权）与手动 API Token；令牌持久化在 KV 且**到期自动刷新**，无需每次登录 |
 | 4. 访问密码保护 | 进入构建器需输入密码（默认 `123456`），登录签发 7 天有效 token，后台可随时修改密码 |
-| 5. CNB 后台长任务对话 | 可选接入 [CNB 云原生构建](https://docs.cnb.cool/zh/build/intro.html)：对话提交到 node:20 流水线后台执行（无 Workers 长连接超时限制），LLM 生成 → 工具调用 → 部署 → 冒烟测试全程自动，可切换页面，完成后自动刷新 |
+| 5. GitHub Actions 后台长任务对话 | 可选接入 [GitHub Actions](https://docs.github.com/zh/actions)：对话提交到 `workflow_dispatch` 后台执行（单任务最长 6 小时，无 Workers 长连接超时限制），LLM 生成 → 工具调用 → 部署 → 冒烟测试全程自动，可切换页面，完成后自动刷新 |
 | 5. 项目与远程 Worker 联动 | 构建器创建的项目删除时**同步删除远程 Worker**；支持**关联已有 Worker 项目**（拉取代码、对话修改、覆盖部署，删除项目不影响远程） |
 
 其他细节：
@@ -27,7 +27,7 @@
 - 🔧 Agent 内置 HTTP 测试工具（`test-http`，等效 curl）：生成代码并部署后可直接请求接口验证，结果回填对话；部署成功自动冒烟测试（404 中性提示）；浏览器级验证可让 Agent 生成 Playwright 脚本本机运行；
 - 🕘 每个项目支持版本控制：每次部署自动存档，⭐ 标记的版本永久保留（不受上限），未标记版本最多保留 20 个；可查看代码、恢复、恢复并部署；
 - 🔁 递归对话：同一轮对话内 Agent 可自动多轮调用工具（curl 网页源码/开源代码、MARKDOWN 获取网页资料），基于结果继续生成与测试，无需用户反复发消息；
-- 🚀 后台长任务（方案 B）：配置 CNB 后对话改为「提交 → CNB 云构建后台执行 → 轮询进度 → 自动写回」，彻底解决长对话/长响应在 Workers 上超时中断的问题；未配置 CNB 时自动回退内置流式对话；
+- 🚀 后台长任务（方案 B）：配置 GitHub Actions 后对话改为「提交 → GitHub Actions 后台执行 → 轮询进度 → 自动写回」，彻底解决长对话/长响应在 Workers 上超时中断的问题；未配置时自动回退内置流式对话；
 - 🎨 深色现代化界面，无需任何前端构建步骤。
 
 ## 🧱 技术架构
@@ -46,7 +46,7 @@ Cloudflare Worker（src/index.js）
    │     └── deploy    → 调用 Cloudflare Workers REST API 上传脚本
    └── 其他路径 → env.ASSETS 静态资源
 
-CNB 云原生构建（cnb.cool，node:20 容器，事件 api_trigger_builder）
+GitHub Actions（workflow_dispatch，ubuntu + Node 20，最长 6 小时）
    └── agent-runner/run.js：LLM 生成 → 工具调用 → 部署 → 冒烟测试 → 回调构建器
 ```
 
@@ -61,9 +61,10 @@ CNB 云原生构建（cnb.cool，node:20 容器，事件 api_trigger_builder）
 cf-worker-builder/
 ├── package.json          # 依赖与脚本（wrangler）
 ├── wrangler.toml         # Worker 配置（KV 绑定、静态资源）
-├── .cnb.yml              # CNB 云原生构建流水线（api_trigger_builder 事件）
+├── .github/workflows/
+│   └── builder-task.yml  # GitHub Actions 后台执行器（workflow_dispatch）
 ├── agent-runner/
-│   └── run.js            # CNB 外部执行器：LLM 循环/工具/部署/冒烟/回调（Node 20）
+│   └── run.js            # 外部执行器：LLM 循环/工具/部署/冒烟/回调（Node 20）
 ├── public/
 │   └── index.html        # 前端单页应用（对话/代码/设置）
 └── src/
@@ -123,7 +124,7 @@ npm run deploy
 7. **关联已有 Worker**：新建项目对话框切到「关联已有 Worker」，输入 Cloudflare 中的脚本名，构建器自动拉取代码；之后可在对话中修改并覆盖部署。该项目显示「外部 Worker」徽章，删除时只移除本地记录、不影响远程。
 8. **删除联动**：构建器自己创建的项目删除时会同时删除 Cloudflare 上对应的 Worker；关联的外部 Worker 项目不会被删除。
 9. **访问密码**：进入页面需输入密码（默认 `123456`），登录后可在「设置 → ③ 访问密码」中修改。
-10. **CNB 后台长任务（可选，推荐）**：在「设置 → ④ CNB 云构建」填写仓库路径与 API Token 后，对话自动改为提交到 CNB 云原生构建后台执行（可切换页面，完成后自动刷新，不再有 Workers 长连接超时/中断问题）。首次使用需先把本仓库推送到 cnb.cool（含 `.cnb.yml` 与 `agent-runner/`），详见下文「🚀 CNB 后台长任务使用指南」。
+10. **GitHub Actions 后台长任务（可选，推荐）**：在「设置 → ④ 后台执行器 · GitHub Actions」填写仓库路径与 PAT 后，对话自动改为提交到 GitHub Actions 后台执行（可切换页面，完成后自动刷新，不再有 Workers 长连接超时/中断问题）。首次使用需先把本仓库推送到 GitHub（含 `.github/workflows/builder-task.yml` 与 `agent-runner/`），详见下文「🚀 GitHub Actions 后台长任务使用指南」。
 
 ## 🔌 API 一览
 
@@ -153,38 +154,43 @@ npm run deploy
 | PUT | `/api/projects/:id/code` | 更新代码 |
 | POST | `/api/projects/:id/clear` | 清空对话历史 |
 
-## 🚀 CNB 后台长任务使用指南（方案 B）
+## 🚀 GitHub Actions 后台长任务使用指南（方案 B）
 
 ### 原理
 
-Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容易中断），而 [CNB 云原生构建](https://docs.cnb.cool/zh/build/intro.html) 的流水线容器（`node:20`）**没有此类时长限制**。因此把「LLM 生成 → 工具调用 → 部署 → 冒烟测试」整个 Agent 循环交给 CNB 后台执行：
+Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容易中断），而 [GitHub Actions](https://docs.github.com/zh/actions) 的 runner（ubuntu + Node 20，位于海外网络，访问 Cloudflare 构建器/API 稳定）**单任务最长可运行 6 小时**。因此把「LLM 生成 → 工具调用 → 部署 → 冒烟测试」整个 Agent 循环交给 GitHub Actions 后台执行：
 
 ```
-对话框发送 → 构建器保存任务快照（一次性 token，30 分钟~2 小时有效）
-        → 调用 CNB OPENAPI 触发流水线（仅传 taskId/token/构建器地址，密钥不进 CNB）
-        → CNB 容器执行 agent-runner/run.js（可运行数分钟到数小时）
+对话框发送 → 构建器保存任务快照（一次性 token，4 小时有效）
+        → 调用 GitHub API 触发 workflow_dispatch（仅传 taskId/token/构建器地址，密钥不进 GitHub）
+        → GitHub Actions 执行 agent-runner/run.js（可运行数分钟到数小时）
         → 每步进度回调构建器 → 前端每 2.5 秒轮询显示「第 N 轮生成中…/正在执行工具…/正在部署…」
         → 完成后结果写回项目（代码/历史/版本/项目记忆），前端自动刷新
 ```
 
 ### 配置步骤（一次性）
 
-1. **推送仓库到 cnb.cool**：在 [cnb.cool](https://cnb.cool) 创建仓库（可导入 GitHub 或直接新建），把本仓库代码推上去（`git remote add origin https://cnb.cool/<用户名>/<仓库名>.git && git push -u origin main`）。仓库中必须包含根目录 `.cnb.yml` 与 `agent-runner/` 目录。
-2. **获取 CNB API Token**：cnb.cool → 头像 → 设置 → 访问令牌 → 创建。**必须勾选对应仓库的 `repo-cnb-trigger` 权限（读写 rw）**，否则触发会报 `403 Missing required scopes: repo-cnb-trigger:rw`。
-3. **开启仓库自动触发**：cnb.cool 仓库 → **设置 → 云原生构建 → 勾选「允许自动触发」**。未开启时构建日志页会提示「当前仓库未允许自动触发云原生构建」，OPENAPI 触发不会真正执行流水线。
-4. **构建器设置**：「设置 → ④ CNB 云构建」填写：
-   - **CNB 仓库路径**：如 `chenzhilong/cf-worker-builder`（与 cnb.cool 仓库路径一致）；
-   - **CNB API Token**：上一步创建的令牌；
+1. **推送仓库到 GitHub**：在 [github.com](https://github.com) 创建仓库（公开或私有均可），把本仓库代码推上去：
+   ```bash
+   cd /Users/chenzhilong/cf-worker-builder
+   git remote add origin https://github.com/<用户名>/<仓库名>.git
+   git push -u origin main
+   ```
+   仓库中必须包含根目录 `.github/workflows/builder-task.yml` 与 `agent-runner/`。
+2. **获取 GitHub PAT**：GitHub → 头像 → Settings → Developer settings → Personal access tokens → Fine-grained tokens → 新建：Repository access 选该 runner 仓库，Permissions → **Actions → Read and write**（或 classic token 勾选 `workflow` 或 `repo` scope）。
+3. **构建器设置**：「设置 → ④ 后台执行器 · GitHub Actions」填写：
+   - **GitHub 仓库路径**：如 `chenzhilong/cf-worker-builder-runner`；
+   - **GitHub PAT**：上一步创建的令牌；
    - **触发分支**：默认 `main`。
-5. 保存后，对话框发送消息即自动走「后台长任务」模式（顶部显示 CNB 排队/执行进度，可切换页面，完成后自动刷新）。未配置 CNB 时仍使用内置流式对话。
+4. 保存后，对话框发送消息即自动走「后台长任务」模式（顶部显示 GitHub Actions 排队/执行进度，可切换页面，完成后自动刷新）。未配置时仍使用内置流式对话。
 
-> 💡 排查提示：触发失败时构建器会返回具体原因。`403` 说明 Token 权限不足（需 `repo-cnb-trigger:rw`）；「CNB 未创建构建」说明仓库未开启「允许自动触发」；「分支 main 和 $ 下无 api_trigger_builder 事件配置」说明 `.cnb.yml` 中 `api_trigger_*` 事件必须写在**分支块下**（`main:` / `$:`），不能放顶层。
+> 💡 排查提示：触发失败时构建器会返回具体原因。`401` 说明 PAT 无效；`404` 说明仓库路径错误、workflow 文件不在该分支，或 PAT 无 Actions 写权限（GitHub 刻意混淆 404/403）。任务执行日志可在 `https://github.com/<仓库>/actions` 查看。
 
 ### 安全说明
 
-- LLM Key 与 Cloudflare Token **不会**出现在 CNB 环境变量或构建日志中：任务快照保存在构建器 KV，runner 通过一次性随机 token 拉取，任务完成后即销毁（KV 过期自动清理）。
-- CNB API Token 保存在构建器 KV（脱敏显示），仅用于触发流水线。
-- 若不需要后台长任务，清空「④ CNB 云构建」的两个输入框保存即可回到流式对话。
+- LLM Key 与 Cloudflare Token **不会**出现在 GitHub 环境变量或 Actions 日志中：任务快照保存在构建器 KV，runner 通过一次性随机 token 拉取，任务完成后即销毁（KV 过期自动清理）。
+- GitHub PAT 保存在构建器 KV（脱敏显示），仅用于触发 workflow_dispatch。
+- 若不需要后台长任务，清空「④ 后台执行器」的两个输入框保存即可回到流式对话。
 
 ## 🔑 Cloudflare 凭据获取
 
@@ -222,6 +228,11 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
 
 ## 📝 更新记录
 
+- **2026-08-10**：v2.1.0 方案 B 执行器切换为 GitHub Actions（CNB 大陆容器访问 Cloudflare 不稳定，弃用）
+  - 新增 `src/github.js`：GitHub API 触发 `workflow_dispatch`（`POST /repos/{repo}/actions/workflows/builder-task.yml/dispatches`），404/401 给出明确排查提示
+  - 新增 `.github/workflows/builder-task.yml`：ubuntu + Node 20，`timeout-minutes: 360`（最长 6 小时），复用 `agent-runner/run.js`
+  - 设置面板「④ 后台执行器 · GitHub Actions」：仓库路径 / PAT（Actions 写权限）/ 触发分支；未配置时回退内置流式对话
+  - 安全设计不变：LLM Key / Cloudflare Token 不进 GitHub 环境与日志，runner 用一次性 token 从构建器拉取
 - **2026-08-10**：v2.0.0 方案 B：CNB 云构建后台长任务执行器
   - 新增 `POST /api/projects/:id/chat/async`：对话任务提交到 CNB 流水线（node:20 容器，无超时限制）后台执行，立即返回 taskId，前端轮询 chat-status 查看实时进度
   - 新增 CNB runner（`agent-runner/run.js`）：完整 Agent 循环（LLM 生成 → test-http/MARKDOWN 工具递归 → 部署 → 冒烟测试），每步进度回调构建器，结果写回对话历史/代码/版本/项目记忆

@@ -1,0 +1,47 @@
+# 构建器后台长任务执行器（方案 B）
+#
+# 由构建器（Worker 在线构建器）通过 GitHub API 触发：
+#   POST https://api.github.com/repos/{owner}/{repo}/actions/workflows/builder-task.yml/dispatches
+#   {"ref": "main", "inputs": {"task_id": "...", "task_token": "...", "builder_base_url": "https://builder.logg.asia"}}
+#
+# runner（agent-runner/run.js）在 ubuntu 容器中执行完整的
+# 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」Agent 循环（最长 6 小时，无 Workers 长连接超时限制），
+# 结果通过回调写回构建器。LLM Key / Cloudflare Token 不会出现在本工作流的环境变量或日志中，
+# 而是由 runner 用一次性 task_token 从构建器拉取，任务完成后自动销毁。
+
+name: Builder Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: 构建器任务 ID
+        required: true
+      task_token:
+        description: 一次性任务令牌（仅 runner 使用）
+        required: true
+      builder_base_url:
+        description: 构建器地址（用于拉取任务/上报进度/回传结果）
+        required: true
+        default: https://builder.logg.asia
+
+jobs:
+  run-builder-agent:
+    name: 执行构建器 Agent 任务
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # GitHub Actions 单任务最长 6 小时
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 执行构建器 Agent 任务
+        env:
+          TASK_ID: ${{ github.event.inputs.task_id }}
+          TASK_TOKEN: ${{ github.event.inputs.task_token }}
+          BUILDER_BASE_URL: ${{ github.event.inputs.builder_base_url }}
+        run: node agent-runner/run.js
