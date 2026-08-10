@@ -178,6 +178,9 @@
   .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 10px; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
   .check input { accent-color: var(--accent); }
+  .chat-mode { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; cursor: pointer; user-select: none; transition: all .15s; white-space: nowrap; }
+  .chat-mode.on { color: #ffd95e; border-color: rgba(255,217,94,.5); background: rgba(255,217,94,.08); }
+  .chat-mode .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
 
   /* ---------- 代码页 ---------- */
   .code-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 10px; }
@@ -393,7 +396,10 @@
         <textarea id="input" rows="3" inputmode="text" autocapitalize="sentences" autocorrect="on" spellcheck="true" enterkeyhint="send"
           placeholder="描述你想构建的 Worker，例如：做一个天气查询 API，GET /weather?city=北京 返回 JSON；然后跟我说「加一个 /about 页面」来继续修改…"></textarea>
         <div class="composer-bar">
-          <label class="check"><input type="checkbox" id="autoDeploy" checked /> 自动部署</label>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label class="check"><input type="checkbox" id="autoDeploy" checked /> 自动部署</label>
+            <span id="chatModeToggle" class="chat-mode hidden" title="后台长任务：提交到 CNB 云构建执行（可切换页面，无超时限制）；流式：构建器内实时打字机输出"><span class="dot"></span><span id="chatModeLabel">后台模式</span></span>
+          </div>
           <button id="btnSend" class="btn primary">发送 ↵</button>
         </div>
       </div>
@@ -620,7 +626,7 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
-const state = { settings: null, projects: [], project: null, busy: false, token: '' };
+const state = { settings: null, projects: [], project: null, busy: false, token: '', asyncMode: true };
 
 /* ---------------- 基础工具 ---------------- */
 
@@ -918,8 +924,8 @@ async function sendMessage() {
   box.appendChild(typing);
   scrollBottom();
 
-  // CNB 已配置：走「后台长任务」异步路径（提交到 CNB 云构建执行，可切换页面，不占长连接）
-  if (state.settings && state.settings.hasCnb) {
+  // CNB 已配置且开启「后台模式」：走异步路径（提交到 CNB 云构建执行，可切换页面，不占长连接）
+  if (state.settings && state.settings.hasCnb && state.asyncMode) {
     await sendMessageAsync(text, typing);
     return;
   }
@@ -1047,6 +1053,27 @@ async function sendMessage() {
 }
 
 /* ---------------- CNB 异步对话（后台长任务） ---------------- */
+
+/** 对话模式开关：CNB 后台模式（默认，CNB 已配置时可用）↔ 流式模式 */
+function updateChatModeUI() {
+  const el = $('#chatModeToggle');
+  if (!el) return;
+  const enabled = !!(state.settings && state.settings.hasCnb);
+  el.classList.toggle('hidden', !enabled);
+  if (!enabled) return;
+  const stored = localStorage.getItem('chat_mode');
+  state.asyncMode = stored !== 'stream'; // 默认后台模式
+  el.classList.toggle('on', state.asyncMode);
+  $('#chatModeLabel').textContent = state.asyncMode ? '后台模式' : '流式模式';
+}
+
+function toggleChatMode() {
+  if (!state.settings || !state.settings.hasCnb) return;
+  state.asyncMode = !state.asyncMode;
+  localStorage.setItem('chat_mode', state.asyncMode ? 'async' : 'stream');
+  updateChatModeUI();
+  toast(state.asyncMode ? '🌐 已切换到 CNB 后台模式（可切页，无超时限制）' : '💬 已切换到流式模式（实时打字机，注意超时）');
+}
 
 async function sendMessageAsync(text, typing) {
   try {
@@ -1478,6 +1505,8 @@ $('#btnImportProject').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 $('#btnSettings').addEventListener('click', openSettings);
+$('#chatModeToggle').addEventListener('click', toggleChatMode);
+updateChatModeUI();
 $('#btnCreateProject').addEventListener('click', createProject);
 $('#btnSaveSettings').addEventListener('click', saveSettings);
 $('#btnTestCf').addEventListener('click', testCf);
