@@ -12,11 +12,15 @@
  *   TASK_ID            任务 ID
  *   TASK_TOKEN         一次性任务令牌（用于向构建器拉取任务/上报进度/回传结果）
  *   BUILDER_BASE_URL   构建器地址，如 https://builder.logg.asia
+ *   BUILDER_FALLBACK_IP 可选：构建器域名解析失败/被污染时，用该 IP 直连（SNI 仍为域名）
  *
  * LLM Key / Cloudflare Token 不会出现在 CNB 环境变量或构建日志中，
  * 而是通过一次性 token 从构建器拉取，任务结束后自动销毁。
  */
 
+import http from 'node:http';
+import https from 'node:https';
+import dns from 'node:dns/promises';
 import { callChatCompletion } from '../src/agent.js';
 import { extractCode } from '../src/util.js';
 import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes } from '../src/tools.js';
@@ -25,6 +29,7 @@ import { deployWorker } from '../src/deploy.js';
 const TASK_ID = process.env.TASK_ID || '';
 const TASK_TOKEN = process.env.TASK_TOKEN || '';
 const BASE_URL = String(process.env.BUILDER_BASE_URL || '').replace(/\/+$/, '');
+const FALLBACK_IP = String(process.env.BUILDER_FALLBACK_IP || '').trim();
 
 const MAX_ROUNDS = 5; // 工具递归轮次上限（与构建器流式路径一致）
 const MAX_LLM_MS = 300000; // 单轮 LLM 超时 5 分钟（比 Workers 内 90 秒宽裕很多）
@@ -37,12 +42,99 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** 提取 fetch 错误的可读原因（DNS/连接/TLS/超时等） */
+function describeFetchError(e) {
+  const cause = e && e.cause ? e.cause : e;
+  const code = cause && cause.code ? cause.code : (e && e.code ? e.code : '');
+  const detail = cause && cause.message ? cause.message : (e && e.message ? e.message : String(e));
+  return code ? `${code}: ${detail}` : String(detail);
+}
+
+/** 使用固定 IP 发起请求（绕过 DNS；SNI/Host 仍是原域名，TLS 证书校验正常） */
+function requestWithIp(url, options = {}, ip) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(url);
+    } catch (e) {
+      return reject(e);
+    }
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.request(
+      u,
+      {
+        method: options.method || 'GET',
+        headers: options.headers || {},
+        // 覆盖 DNS 解析：直接使用指定 IP
+        lookup: (host, opts, cb) => cb(null, ip, 4),
+        timeout: options.timeout || 20000,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () =>
+          resolve(
+            new Response(Buffer.concat(chunks), {
+              status: res.statusCode,
+              headers: res.headers,
+            })
+          )
+        );
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('请求超时（20 秒）')));
+    req.on('error', reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
+
+/** 带诊断与重试的 GET（拉取任务） */
+async function fetchTask() {
+  const url = `${BASE_URL}/api/tasks/${TASK_ID}?token=${TASK_TOKEN}`;
+  let lastErr = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      // 先打印 DNS 解析结果，便于定位 ENOTFOUND/EAI_AGAIN
+      try {
+        const host = new URL(url).hostname;
+        const addrs = await dns.lookup(host, { all: true });
+        log(`DNS 解析 ${host} →`, addrs.map((a) => a.address).join(', '));
+      } catch (de) {
+        log(`⚠️ DNS 解析失败：${describeFetchError(de)}`);
+      }
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`拉取任务失败（HTTP ${res.status}）：${(await res.text().catch(() => '')).slice(0, 300)}`);
+      }
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+      log(`拉取任务失败（第 ${i + 1}/3 次）：${describeFetchError(e)}`);
+      if (FALLBACK_IP && i === 1) {
+        // 常规 fetch 连续失败时，尝试用固定 IP 直连（绕过 DNS 污染/解析失败）
+        try {
+          log(`尝试固定 IP 直连：${FALLBACK_IP}`);
+          const res = await requestWithIp(url, {}, FALLBACK_IP);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.json();
+        } catch (fe) {
+          log(`固定 IP 直连也失败：${describeFetchError(fe)}`);
+        }
+      }
+      await sleep(3000 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
 /** 带重试的 POST（进度/结果回调，网络抖动时重试） */
 async function postWithRetry(path, payload, tries = 3) {
   let lastErr = null;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(`${BASE_URL}${path}`, {
+      const url = `${BASE_URL}${path}`;
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: TASK_TOKEN, ...payload }),
@@ -51,6 +143,24 @@ async function postWithRetry(path, payload, tries = 3) {
       lastErr = new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
     } catch (e) {
       lastErr = e;
+      log(`回传 ${path} 失败（第 ${i + 1}/${tries} 次）：${describeFetchError(e)}`);
+      if (FALLBACK_IP && i === Math.floor(tries / 2)) {
+        try {
+          const url = `${BASE_URL}${path}`;
+          const res = await requestWithIp(
+            url,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: TASK_TOKEN, ...payload }),
+            },
+            FALLBACK_IP
+          );
+          if (res.ok) return await res.json().catch(() => ({}));
+        } catch (fe) {
+          log(`回传固定 IP 直连也失败：${describeFetchError(fe)}`);
+        }
+      }
     }
     await sleep(2000 * (i + 1));
   }
@@ -117,14 +227,11 @@ async function main() {
   if (!TASK_ID || !TASK_TOKEN || !BASE_URL) {
     throw new Error('缺少环境变量：TASK_ID / TASK_TOKEN / BUILDER_BASE_URL');
   }
+  log(`构建器地址：${BASE_URL}${FALLBACK_IP ? `（备用 IP：${FALLBACK_IP}）` : ''}`);
 
-  // 1. 拉取任务（一次性 token）
+  // 1. 拉取任务（一次性 token，带 DNS 诊断与重试）
   log('拉取任务…');
-  const fetchRes = await fetch(`${BASE_URL}/api/tasks/${TASK_ID}?token=${TASK_TOKEN}`);
-  if (!fetchRes.ok) {
-    throw new Error(`拉取任务失败（${fetchRes.status}）：${(await fetchRes.text().catch(() => '')).slice(0, 300)}`);
-  }
-  const task = await fetchRes.json();
+  const task = await fetchTask();
   log('任务已获取：worker =', task.workerName, '，autoDeploy =', task.autoDeploy);
 
   await reportProgress({ stage: 'thinking', round: 1, note: '已连接构建器，开始第 1 轮生成…' });
@@ -219,7 +326,7 @@ main()
     try {
       await reportResult({ error: String((e && e.message) || e).slice(0, 500) });
     } catch (e2) {
-      console.error('[runner] 结果回传失败:', e2.message);
+      console.error('[runner] 结果回传失败:', describeFetchError(e2));
       process.exit(1);
     }
   })
