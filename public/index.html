@@ -498,6 +498,9 @@
     <label>触发分支
       <input id="setCnbBranch" placeholder="main（默认）" autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
+    <label>备用直连 IP（可选，仅当 CNB 容器访问构建器域名失败时填）
+      <input id="setCnbFallbackIp" placeholder="如 104.21.55.178（构建器域名的 Cloudflare IP，可留空）" autocapitalize="off" autocorrect="off" spellcheck="false" />
+    </label>
     <p class="hint">
       🔑 CNB Token 获取：登录 <a href="https://cnb.cool" target="_blank" rel="noopener">cnb.cool</a> → 个人头像 → 设置
       → 访问令牌 → 创建（勾选对应仓库的流水线触发权限），或直接使用平台注入的 <code>CNB_TOKEN</code>。
@@ -1255,6 +1258,7 @@ function openSettings() {
   $('#setCnbToken').value = '';
   $('#setCnbToken').placeholder = s.cnbTokenMasked ? `已保存：${s.cnbTokenMasked}（留空则保持不变）` : 'cnb_xxx';
   $('#setCnbBranch').value = s.cnbBranch || 'main';
+  $('#setCnbFallbackIp').value = s.cnbFallbackIp || '';
   renderOauthStatus();
   $('#settingsDialog').showModal();
 }
@@ -1373,6 +1377,7 @@ async function saveSettings() {
     cnbRepo: $('#setCnbRepo').value.trim(),
     cnbToken: $('#setCnbToken').value.trim(),
     cnbBranch: $('#setCnbBranch').value.trim() || 'main',
+    cnbFallbackIp: $('#setCnbFallbackIp').value.trim(),
   };
   // Key 允许留空：留空表示沿用已保存的 Key
   const s = state.settings || {};

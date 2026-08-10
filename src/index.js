@@ -102,6 +102,7 @@ async function handleApi(request, url, env, store) {
         cfSubdomain: settings.cfSubdomain || '',
         cnbRepo: settings.cnbRepo || '',
         cnbBranch: settings.cnbBranch || 'main',
+        cnbFallbackIp: settings.cnbFallbackIp || '',
         cnbTokenMasked: maskKey(settings.cnbToken),
         hasCnb: !!(settings.cnbRepo && settings.cnbToken),
       },
@@ -126,6 +127,7 @@ async function handleApi(request, url, env, store) {
       cnbRepo: String(body.cnbRepo || '').trim() || settings.cnbRepo || '',
       cnbToken: String(body.cnbToken || '').trim() || settings.cnbToken || '',
       cnbBranch: String(body.cnbBranch || '').trim() || settings.cnbBranch || 'main',
+      cnbFallbackIp: String(body.cnbFallbackIp || '').trim() || settings.cnbFallbackIp || '',
     };
 
     if (!next.openaiBaseUrl || !next.openaiKey || !next.openaiModel) {
@@ -159,6 +161,7 @@ async function handleApi(request, url, env, store) {
         cfSubdomain: next.cfSubdomain,
         cnbRepo: next.cnbRepo,
         cnbBranch: next.cnbBranch,
+        cnbFallbackIp: next.cnbFallbackIp,
         cnbTokenMasked: maskKey(next.cnbToken),
         hasCnb: !!(next.cnbRepo && next.cnbToken),
       },
@@ -593,6 +596,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
       taskId,
       taskToken,
       baseUrl,
+      fallbackIp: settings.cnbFallbackIp || '',
     });
     task.cnbSn = r.sn || '';
     task.buildLogUrl = r.buildLogUrl || '';
