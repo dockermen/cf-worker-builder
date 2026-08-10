@@ -21,7 +21,7 @@ import {
   publicOAuth,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
-import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes } from './tools.js';
+import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes, detectProxyWorker } from './tools.js';
 import { triggerCnbBuild } from './cnb.js';
 import { triggerGithubWorkflow } from './github.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode, listWorkers } from './deploy.js';
@@ -1268,15 +1268,31 @@ async function deployAction(store, id) {
   }
 }
 
-/** 智能冒烟测试：从代码提取路由，逐个探测，找到第一个正常响应（避免根路径未处理时误报 404） */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 智能冒烟测试：从代码提取路由，逐个探测，找到第一个正常响应。
+ * - 部署后先等待 3 秒（Cloudflare 边缘传播），降低「刚部署就 404」的误报；
+ * - 对 404/5xx/网络错误最多重试 3 次（间隔 4 秒），排除边缘同步与上游抖动；
+ * - 代理类 Worker（透传上游状态码）命中 404 时标记 proxyHint，提示文案区分「上游 404」与「未处理根路径」。
+ */
 async function smartSmokeTest(url, code) {
   const routes = extractRoutes(code || '');
+  const proxyHint = detectProxyWorker(code);
   let last = null;
+  await sleep(3000); // 部署后等待边缘传播
   for (const r of routes) {
     const target = r === '/' ? url : `${url}${r}`;
-    const res = await executeHttpTest(`GET ${target}`);
-    last = { ...res, route: r };
-    if (!res.error && res.status < 400) break; // 找到正常响应即停止
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await executeHttpTest(`GET ${target}`);
+      last = { ...res, route: r, proxyHint };
+      if (!res.error && res.status < 400) return last; // 找到正常响应即通过
+      if (res.error || res.status === 404 || res.status >= 500) {
+        await sleep(4000); // 网络错误 / 404 / 5xx：可能传播延迟或上游抖动，等待后重试
+      } else {
+        break; // 其他状态（如 401/403）不重试，进入下一路由
+      }
+    }
   }
   return last;
 }

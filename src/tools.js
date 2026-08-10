@@ -78,6 +78,15 @@ export function validateTargetUrl(url) {
 const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+/** 判断是否为代理/转发类 Worker：透传上游状态码，冒烟 404 多为上游问题而非未处理根路径 */
+export function detectProxyWorker(code) {
+  const c = String(code || '');
+  return (
+    /fetch\s*\(/.test(c) &&
+    /(UPSTREAM|upstream|proxy|代理|forward|targetHost|target_url|targetUrl|ORIGIN|origin\s*=|反代)/i.test(c)
+  );
+}
+
 /** 判断是否为 Cloudflare 人机验证挑战页（403/503 + "Just a moment..." / challenges.cloudflare.com） */
 export function isCloudflareChallenge(result) {
   if (!result || result.error) return false;
@@ -141,6 +150,7 @@ export async function executeHttpTest(specOrSpecText) {
     const result = {
       method: fallback ? 'GET(降级)' : parsed.method,
       url: parsed.url,
+      finalUrl: res.url || parsed.url,
       status: res.status,
       statusText: res.statusText,
       contentType: res.headers.get('content-type') || '',
@@ -181,8 +191,11 @@ export function formatTestResult(result, label = '测试') {
   if (!result) return '';
   if (result.error) return `🔧 ${label}请求失败：${result.error}`;
   const bodyPreview = (result.body || '').replace(/\n/g, ' ').slice(0, 240);
-  // 冒烟测试 404：多半是 Worker 未处理根路径，属正常，给出友好说明而非报错
+  // 冒烟测试 404：区分「Worker 未处理根路径」与「代理类 Worker 透传上游 404」
   if (label.startsWith('冒烟测试') && result.status === 404) {
+    if (result.proxyHint) {
+      return `🌐 冒烟测试：HTTP 404 — 代理类 Worker 透传了上游的 404（可能是上游路径变化/反爬拦截/重定向链异常，Worker 本身运行正常）。可先用 test-http 直连目标站同路径对比，或检查代理目标地址；这不是 Worker 未处理根路径。`;
+    }
     return `🌐 冒烟测试结果：HTTP 404（Worker 未处理根路径 /，可能只响应特定路由，属正常现象）`;
   }
   return `🔧 ${label}结果：${result.status} ${result.statusText || ''}${bodyPreview ? '\n' + bodyPreview : ''}`;

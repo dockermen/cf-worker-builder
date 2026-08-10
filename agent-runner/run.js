@@ -23,7 +23,7 @@ import https from 'node:https';
 import dns from 'node:dns/promises';
 import { callChatCompletion } from '../src/agent.js';
 import { extractCode } from '../src/util.js';
-import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes } from '../src/tools.js';
+import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes, detectProxyWorker } from '../src/tools.js';
 import { deployWorker } from '../src/deploy.js';
 import { browserFetchText } from './browser.js';
 
@@ -211,15 +211,28 @@ async function callLLMWithBeat(settings, messages) {
   }
 }
 
-/** 智能冒烟测试：探测代码中的路由，找到第一个正常响应（与构建器逻辑一致） */
+/**
+ * 智能冒烟测试：探测代码中的路由，找到第一个正常响应（与构建器逻辑一致）。
+ * - 部署后等待 3 秒（Cloudflare 边缘传播），404/5xx/网络错误最多重试 3 次；
+ * - 代理类 Worker 命中 404 时标记 proxyHint，文案区分「上游 404」与「未处理根路径」。
+ */
 async function smartSmokeTest(url, code) {
   const routes = extractRoutes(code || '');
+  const proxyHint = detectProxyWorker(code);
   let last = null;
+  await sleep(3000);
   for (const r of routes) {
     const target = r === '/' ? url : `${url}${r}`;
-    const res = await executeHttpTest(`GET ${target}`);
-    last = { ...res, route: r };
-    if (!res.error && res.status < 400) break;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await executeHttpTest(`GET ${target}`);
+      last = { ...res, route: r, proxyHint };
+      if (!res.error && res.status < 400) return last;
+      if (res.error || res.status === 404 || res.status >= 500) {
+        await sleep(4000);
+      } else {
+        break;
+      }
+    }
   }
   return last;
 }
