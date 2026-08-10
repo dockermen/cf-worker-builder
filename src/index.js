@@ -107,6 +107,7 @@ async function handleApi(request, url, env, store) {
         cnbTokenMasked: maskKey(settings.cnbToken),
         hasCnb: !!(settings.cnbRepo && settings.cnbToken),
         // GitHub Actions（推荐的后台长任务执行器）
+        ghEnabled: settings.ghEnabled !== false,
         ghRepo: settings.ghRepo || '',
         ghRef: settings.ghRef || 'main',
         ghTokenMasked: maskKey(settings.ghToken),
@@ -135,6 +136,7 @@ async function handleApi(request, url, env, store) {
       cnbBranch: String(body.cnbBranch || '').trim() || settings.cnbBranch || 'main',
       cnbFallbackIp: String(body.cnbFallbackIp || '').trim() || settings.cnbFallbackIp || '',
       // GitHub Actions（推荐）
+      ghEnabled: typeof body.ghEnabled === 'boolean' ? body.ghEnabled : settings.ghEnabled !== false,
       ghRepo: String(body.ghRepo || '').trim() || settings.ghRepo || '',
       ghToken: String(body.ghToken || '').trim() || settings.ghToken || '',
       ghRef: String(body.ghRef || '').trim() || settings.ghRef || 'main',
@@ -174,6 +176,7 @@ async function handleApi(request, url, env, store) {
         cnbFallbackIp: next.cnbFallbackIp,
         cnbTokenMasked: maskKey(next.cnbToken),
         hasCnb: !!(next.cnbRepo && next.cnbToken),
+        ghEnabled: next.ghEnabled !== false,
         ghRepo: next.ghRepo,
         ghRef: next.ghRef,
         ghTokenMasked: maskKey(next.ghToken),
@@ -546,6 +549,9 @@ async function asyncChatAction(request, store, id, baseUrl) {
   }
   if (!settings.ghRepo || !settings.ghToken) {
     return json({ error: '尚未配置 GitHub Actions（设置 → ④ 后台执行器：仓库路径 + PAT），无法使用后台长任务对话；或切换为普通流式对话' }, 400);
+  }
+  if (settings.ghEnabled === false) {
+    return json({ error: '已在设置中关闭 GitHub Actions 后台长任务，请改用普通流式对话（或在设置中重新启用）' }, 400);
   }
 
   // 用户消息立即持久化（重试去重；即使后续失败，切换页面后记录也不丢失）
