@@ -162,6 +162,14 @@
   .msg pre { padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
   .msg .codeblock pre { max-height: 280px; overflow: auto; }
   .msg .codeblock.collapsed pre { display: none; }
+  /* 工具结果折叠卡片：默认摘要，点击展开详情 */
+  .msg.tool-result { border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); padding: 0; overflow: hidden; }
+  .tool-summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; font-size: 13px; color: var(--text); }
+  .tool-summary:hover { background: rgba(255,255,255,.04); }
+  .tool-toggle { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+  .tool-detail { padding: 2px 12px 10px; }
+  .tool-pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; max-height: 55vh; overflow: auto; margin: 6px 0 0; color: var(--muted); }
+  .tool-detail.hidden { display: none; }
   .msg .codehead { cursor: pointer; user-select: none; }
   .msg pre code { font-family: var(--mono); color: #c9d4e8; white-space: pre; }
   .msg code { font-family: var(--mono); font-size: 12.5px; background: rgba(139,147,167,.15); border-radius: 4px; padding: 1px 5px; }
@@ -873,6 +881,34 @@ function renderMessages(history) {
       const div = document.createElement('div');
       div.className = 'msg assistant';
       div.innerHTML = renderMarkdown(m.content);
+      box.appendChild(div);
+    } else if (m.role === 'system' && /^🔧\s*工具结果/.test(m.content)) {
+      // 工具结果：折叠卡片（摘要 + 点击展开详情），避免刷屏
+      const firstLine = (m.content.split('\n')[0] || '').trim();
+      let rest = m.content.slice(firstLine.length).trim();
+      // 去掉包裹正文的 ``` 代码块标记，只展示实际内容
+      rest = rest.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '').replace(/\n?```\s*$/, '');
+      const div = document.createElement('div');
+      div.className = 'msg system tool-result collapsed';
+      const summary = document.createElement('div');
+      summary.className = 'tool-summary';
+      summary.innerHTML = '<span>🛠️ ' + esc(firstLine.replace(/^🔧\s*/, '')) + '</span><span class="tool-toggle">点击展开详情</span>';
+      const detail = document.createElement('div');
+      detail.className = 'tool-detail hidden';
+      if (rest) {
+        const pre = document.createElement('pre');
+        pre.className = 'tool-pre';
+        pre.textContent = rest;
+        detail.appendChild(pre);
+      }
+      summary.addEventListener('click', () => {
+        const open = div.classList.toggle('open');
+        detail.classList.toggle('hidden', !open);
+        summary.querySelector('.tool-toggle').textContent = open ? '点击收起' : '点击展开详情';
+        if (open) scrollBottom();
+      });
+      div.appendChild(summary);
+      div.appendChild(detail);
       box.appendChild(div);
     } else {
       const div = document.createElement('div');
