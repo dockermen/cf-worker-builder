@@ -1,26 +1,17 @@
 {
   "name": "cf-worker-builder",
   "version": "1.0.0",
-  "description": "对话式 Cloudflare Worker 在线构建器：接入 OpenAI 兼容大模型（DeepSeek 等），对话生成 Worker 代码并自动部署到 Cloudflare Workers",
+  "description": "Cloudflare Worker 在线构建器：配置 OpenAI 兼容大模型，对话式生成 Worker 代码并自动部署到 Cloudflare Workers",
   "type": "module",
-  "license": "MIT",
-  "keywords": [
-    "cloudflare-workers",
-    "cloudflare",
-    "deepseek",
-    "openai",
-    "ai-agent",
-    "code-generator",
-    "worker-builder"
-  ],
+  "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
-  "engines": {
-    "node": ">=18"
-  },
   "devDependencies": {
     "wrangler": "^4.14.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260801.1": true
   }
 }
