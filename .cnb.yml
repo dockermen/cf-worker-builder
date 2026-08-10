@@ -1,0 +1,16 @@
+# CNB 云原生构建流水线（cnb.cool）
+#
+# 由构建器（Worker 在线构建器）通过 OPENAPI 触发：
+#   POST https://api.cnb.cool/{repo}/-/build/start
+#   {"event": "api_trigger_builder", "branch": "main", "env": {"TASK_ID": "...", "TASK_TOKEN": "...", "BUILDER_BASE_URL": "..."}}
+#
+# runner（agent-runner/run.js）在 node:20 容器中执行完整的
+# 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」Agent 循环，无 Workers 长连接超时限制，
+# 结果通过回调写回构建器。
+
+api_trigger_builder:
+  - docker:
+      image: node:20
+    stages:
+      - name: 执行构建器 Agent 任务
+        script: node agent-runner/run.js

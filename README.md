@@ -14,6 +14,7 @@
 | 2. 以项目为单位创建，自动发布并给地址 | 项目 CRUD + 对话生成代码 + 自动部署到 workers.dev 并返回 URL，后续可在对话框继续提需求迭代修改 |
 | 3. 内置 Cloudflare 登录态 | 支持「在线登录」（设备码 OAuth，类似 `wrangler login --device`，零配置浏览器授权）与手动 API Token；令牌持久化在 KV 且**到期自动刷新**，无需每次登录 |
 | 4. 访问密码保护 | 进入构建器需输入密码（默认 `123456`），登录签发 7 天有效 token，后台可随时修改密码 |
+| 5. CNB 后台长任务对话 | 可选接入 [CNB 云原生构建](https://docs.cnb.cool/zh/build/intro.html)：对话提交到 node:20 流水线后台执行（无 Workers 长连接超时限制），LLM 生成 → 工具调用 → 部署 → 冒烟测试全程自动，可切换页面，完成后自动刷新 |
 | 5. 项目与远程 Worker 联动 | 构建器创建的项目删除时**同步删除远程 Worker**；支持**关联已有 Worker 项目**（拉取代码、对话修改、覆盖部署，删除项目不影响远程） |
 
 其他细节：
@@ -26,21 +27,27 @@
 - 🔧 Agent 内置 HTTP 测试工具（`test-http`，等效 curl）：生成代码并部署后可直接请求接口验证，结果回填对话；部署成功自动冒烟测试（404 中性提示）；浏览器级验证可让 Agent 生成 Playwright 脚本本机运行；
 - 🕘 每个项目支持版本控制：每次部署自动存档，⭐ 标记的版本永久保留（不受上限），未标记版本最多保留 20 个；可查看代码、恢复、恢复并部署；
 - 🔁 递归对话：同一轮对话内 Agent 可自动多轮调用工具（curl 网页源码/开源代码、MARKDOWN 获取网页资料），基于结果继续生成与测试，无需用户反复发消息；
+- 🚀 后台长任务（方案 B）：配置 CNB 后对话改为「提交 → CNB 云构建后台执行 → 轮询进度 → 自动写回」，彻底解决长对话/长响应在 Workers 上超时中断的问题；未配置 CNB 时自动回退内置流式对话；
 - 🎨 深色现代化界面，无需任何前端构建步骤。
 
 ## 🧱 技术架构
 
 ```
 浏览器（public/index.html 单页应用）
-        │  fetch
+        │  fetch（SSE 流式 / CNB 异步轮询）
         ▼
 Cloudflare Worker（src/index.js）
    ├── /api/* 路由
-   │     ├── settings  → KV 保存 LLM 配置 + Cloudflare 登录态
+   │     ├── settings  → KV 保存 LLM 配置 + Cloudflare 登录态 + CNB 配置
    │     ├── projects  → KV 保存项目/对话历史/代码
-   │     ├── chat      → 调用 OpenAI 兼容 chat/completions（Agent）
+   │     ├── chat      → 调用 OpenAI 兼容 chat/completions（Agent，流式）
+   │     ├── chat/async→ 提交任务到 CNB 云构建（后台长任务，无超时限制）
+   │     ├── tasks/*   → CNB runner 拉取任务 / 上报进度 / 回传结果
    │     └── deploy    → 调用 Cloudflare Workers REST API 上传脚本
    └── 其他路径 → env.ASSETS 静态资源
+
+CNB 云原生构建（cnb.cool，node:20 容器，事件 api_trigger_builder）
+   └── agent-runner/run.js：LLM 生成 → 工具调用 → 部署 → 冒烟测试 → 回调构建器
 ```
 
 - **存储**：Workers KV（`BUILDER_KV`）——设置、项目列表、项目详情（含代码与对话历史）
@@ -54,14 +61,19 @@ Cloudflare Worker（src/index.js）
 cf-worker-builder/
 ├── package.json          # 依赖与脚本（wrangler）
 ├── wrangler.toml         # Worker 配置（KV 绑定、静态资源）
+├── .cnb.yml              # CNB 云原生构建流水线（api_trigger_builder 事件）
+├── agent-runner/
+│   └── run.js            # CNB 外部执行器：LLM 循环/工具/部署/冒烟/回调（Node 20）
 ├── public/
 │   └── index.html        # 前端单页应用（对话/代码/设置）
 └── src/
     ├── index.js          # 主入口 + API 路由
-    ├── agent.js          # LLM Agent（OpenAI 兼容 chat/completions）
+    ├── agent.js          # LLM Agent（OpenAI 兼容 chat/completions / responses）
+    ├── cnb.js            # CNB 云构建触发层（StartBuild OPENAPI）
     ├── deploy.js         # Cloudflare 部署层（上传脚本、启用子域）
     ├── oauth.js          # Cloudflare 在线登录（设备码 OAuth + 令牌刷新）
-    ├── store.js          # KV 数据访问层
+    ├── store.js          # KV 数据访问层（设置/项目/任务/对话状态）
+    ├── tools.js          # Agent 工具（test-http / MARKDOWN，SSRF 防护）
     └── util.js           # 工具函数（slug、代码提取、脱敏等）
 ```
 
@@ -111,6 +123,7 @@ npm run deploy
 7. **关联已有 Worker**：新建项目对话框切到「关联已有 Worker」，输入 Cloudflare 中的脚本名，构建器自动拉取代码；之后可在对话中修改并覆盖部署。该项目显示「外部 Worker」徽章，删除时只移除本地记录、不影响远程。
 8. **删除联动**：构建器自己创建的项目删除时会同时删除 Cloudflare 上对应的 Worker；关联的外部 Worker 项目不会被删除。
 9. **访问密码**：进入页面需输入密码（默认 `123456`），登录后可在「设置 → ③ 访问密码」中修改。
+10. **CNB 后台长任务（可选，推荐）**：在「设置 → ④ CNB 云构建」填写仓库路径与 API Token 后，对话自动改为提交到 CNB 云原生构建后台执行（可切换页面，完成后自动刷新，不再有 Workers 长连接超时/中断问题）。首次使用需先把本仓库推送到 cnb.cool（含 `.cnb.yml` 与 `agent-runner/`），详见下文「🚀 CNB 后台长任务使用指南」。
 
 ## 🔌 API 一览
 
@@ -130,9 +143,45 @@ npm run deploy
 | GET/POST | `/api/projects` | 项目列表 / 创建项目 |
 | GET/DELETE | `/api/projects/:id` | 项目详情 / 删除 |
 | POST | `/api/projects/:id/chat` | 对话（`{message, autoDeploy}`），自动提取代码并部署 |
+| POST | `/api/projects/:id/chat/stream` | 流式对话（SSE，递归工具循环 + 心跳） |
+| POST | `/api/projects/:id/chat/async` | 异步对话：提交任务到 CNB 云构建后台执行，立即返回 `{taskId}` |
+| GET | `/api/projects/:id/chat-status` | 查询对话进行中状态（轮询进度） |
+| GET | `/api/tasks/:id?token=xxx` | CNB runner 拉取任务（一次性 token 鉴权） |
+| POST | `/api/tasks/:id/progress` | CNB runner 上报进度（更新 chat-status） |
+| POST | `/api/tasks/:id/result` | CNB runner 回传结果（写回历史/代码/版本/记忆） |
 | POST | `/api/projects/:id/deploy` | 手动部署当前代码 |
 | PUT | `/api/projects/:id/code` | 更新代码 |
 | POST | `/api/projects/:id/clear` | 清空对话历史 |
+
+## 🚀 CNB 后台长任务使用指南（方案 B）
+
+### 原理
+
+Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容易中断），而 [CNB 云原生构建](https://docs.cnb.cool/zh/build/intro.html) 的流水线容器（`node:20`）**没有此类时长限制**。因此把「LLM 生成 → 工具调用 → 部署 → 冒烟测试」整个 Agent 循环交给 CNB 后台执行：
+
+```
+对话框发送 → 构建器保存任务快照（一次性 token，30 分钟~2 小时有效）
+        → 调用 CNB OPENAPI 触发流水线（仅传 taskId/token/构建器地址，密钥不进 CNB）
+        → CNB 容器执行 agent-runner/run.js（可运行数分钟到数小时）
+        → 每步进度回调构建器 → 前端每 2.5 秒轮询显示「第 N 轮生成中…/正在执行工具…/正在部署…」
+        → 完成后结果写回项目（代码/历史/版本/项目记忆），前端自动刷新
+```
+
+### 配置步骤（一次性）
+
+1. **推送仓库到 cnb.cool**：在 [cnb.cool](https://cnb.cool) 创建仓库（可导入 GitHub 或直接新建），把本仓库代码推上去（`git remote add origin https://cnb.cool/<用户名>/<仓库名>.git && git push -u origin main`）。仓库中必须包含根目录 `.cnb.yml` 与 `agent-runner/` 目录。
+2. **获取 CNB API Token**：cnb.cool → 头像 → 设置 → 访问令牌 → 创建（勾选对应仓库的流水线触发权限，如 `repo-cnb-trigger`）。也可直接用 CNB 流水线内置注入的 `CNB_TOKEN`。
+3. **构建器设置**：「设置 → ④ CNB 云构建」填写：
+   - **CNB 仓库路径**：如 `chenzhilong/cf-worker-builder`（与 cnb.cool 仓库路径一致）；
+   - **CNB API Token**：上一步创建的令牌；
+   - **触发分支**：默认 `main`。
+4. 保存后，对话框发送消息即自动走「后台长任务」模式（顶部显示 CNB 排队/执行进度，可切换页面，完成后自动刷新）。未配置 CNB 时仍使用内置流式对话。
+
+### 安全说明
+
+- LLM Key 与 Cloudflare Token **不会**出现在 CNB 环境变量或构建日志中：任务快照保存在构建器 KV，runner 通过一次性随机 token 拉取，任务完成后即销毁（KV 过期自动清理）。
+- CNB API Token 保存在构建器 KV（脱敏显示），仅用于触发流水线。
+- 若不需要后台长任务，清空「④ CNB 云构建」的两个输入框保存即可回到流式对话。
 
 ## 🔑 Cloudflare 凭据获取
 
@@ -170,6 +219,13 @@ npm run deploy
 
 ## 📝 更新记录
 
+- **2026-08-10**：v2.0.0 方案 B：CNB 云构建后台长任务执行器
+  - 新增 `POST /api/projects/:id/chat/async`：对话任务提交到 CNB 流水线（node:20 容器，无超时限制）后台执行，立即返回 taskId，前端轮询 chat-status 查看实时进度
+  - 新增 CNB runner（`agent-runner/run.js`）：完整 Agent 循环（LLM 生成 → test-http/MARKDOWN 工具递归 → 部署 → 冒烟测试），每步进度回调构建器，结果写回对话历史/代码/版本/项目记忆
+  - 新增 `src/cnb.js`：封装 CNB OPENAPI StartBuild 触发（事件 `api_trigger_builder`）；仓库根目录新增 `.cnb.yml`
+  - 安全设计：LLM Key / Cloudflare Token 不进 CNB 环境变量，任务快照存构建器 KV，runner 用一次性 token 拉取，TTL 2 小时自动清理
+  - 设置面板新增「④ CNB 云构建」配置（仓库路径 / API Token / 触发分支）；未配置 CNB 时自动回退内置流式对话
+  - `agent.js` 支持自定义 LLM 超时（默认 90 秒，CNB runner 放宽到 5 分钟）；`deploy.js` 支持自定义 API Base（本地联调）
 - **2026-08-08**：v1.9.5 项目记忆详细文档化并注入代码生成
   - 记忆升级为结构化 Markdown 文档：一、需求 二、功能 三、技术信息 四、变更记录（保留历史并追加每次改动）
   - 关联导入时 LLM 分析代码生成详细记忆文档；部署成功后 LLM 整合需求/代码更新文档

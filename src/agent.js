@@ -65,14 +65,14 @@ export const SYSTEM_PROMPT = `你是「Worker 在线构建器」的智能体，�
  * @param {{openaiBaseUrl:string, openaiKey:string, openaiModel:string, openaiApiType?:'chat'|'responses'}} settings
  * @param {Array<{role:string, content:string}>} messages
  */
-export async function callChatCompletion(settings, messages) {
+export async function callChatCompletion(settings, messages, timeoutMs = 90000) {
   const base = normalizeBaseUrl(settings.openaiBaseUrl);
   const isResponses = settings.openaiApiType === 'responses';
 
   if (isResponses) {
-    return await callResponsesApi(base, settings, messages);
+    return await callResponsesApi(base, settings, messages, timeoutMs);
   }
-  return await callChatCompletionsApi(base, settings, messages);
+  return await callChatCompletionsApi(base, settings, messages, timeoutMs);
 }
 
 /** 带超时的 fetch（LLM 响应慢时给出明确错误，避免无限挂起） */
@@ -83,7 +83,7 @@ async function fetchWithTimeout(url, options, timeoutMs = 90000) {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (e) {
     if (e && e.name === 'AbortError') {
-      throw new Error('大模型响应超时（90 秒），请重试或更换模型');
+      throw new Error(`大模型响应超时（${Math.round(timeoutMs / 1000)} 秒），请重试或更换模型`);
     }
     throw e;
   } finally {
@@ -92,7 +92,7 @@ async function fetchWithTimeout(url, options, timeoutMs = 90000) {
 }
 
 /** POST {base}/chat/completions */
-async function callChatCompletionsApi(base, settings, messages) {
+async function callChatCompletionsApi(base, settings, messages, timeoutMs) {
   const res = await fetchWithTimeout(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -106,7 +106,7 @@ async function callChatCompletionsApi(base, settings, messages) {
       max_tokens: 8192,
       stream: false,
     }),
-  });
+  }, timeoutMs);
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -120,7 +120,7 @@ async function callChatCompletionsApi(base, settings, messages) {
 }
 
 /** POST {base}/responses（OpenAI Responses API） */
-async function callResponsesApi(base, settings, messages) {
+async function callResponsesApi(base, settings, messages, timeoutMs) {
   const res = await fetchWithTimeout(`${base}/responses`, {
     method: 'POST',
     headers: {
@@ -132,7 +132,7 @@ async function callResponsesApi(base, settings, messages) {
       input: messages,
       stream: false,
     }),
-  });
+  }, timeoutMs);
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');

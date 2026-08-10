@@ -61,6 +61,29 @@ export function makeStore(kv) {
       await this.saveProjectList(list.filter((p) => p.id !== id));
     },
 
+    // ============ CNB 异步任务（外部执行器） ============
+    // task:{id} => { id, projectId, token, createdAt, autoDeploy, userMessage, workerName,
+    //                url, messages, settings, cf, cnbSn, status }（含 expirationTtl 自动清理）
+
+    async getTask(id) {
+      const raw = await kv.get(`task:${id}`, 'json');
+      return raw || null;
+    },
+
+    async saveTask(task, ttl = 7200) {
+      await kv.put(`task:${task.id}`, JSON.stringify(task), { expirationTtl: ttl });
+    },
+
+    async touchTask(id, ttl = 7200) {
+      // 续期：任务进行中防止 KV 过期（进度上报时调用）
+      const task = await this.getTask(id);
+      if (task) await this.saveTask(task, ttl);
+    },
+
+    async deleteTask(id) {
+      await kv.delete(`task:${id}`);
+    },
+
     // ============ 对话进行中状态（用于页面切换后恢复提示） ============
 
   async getChatStatus(id) {

@@ -4,9 +4,9 @@
  */
 
 /** 获取账号的 workers.dev 子域（如 abc123.workers.dev 中的 abc123） */
-export async function getAccountSubdomain(cfToken, accountId) {
+export async function getAccountSubdomain(cfToken, accountId, apiBase = 'https://api.cloudflare.com/client/v4') {
   const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`,
+    `${apiBase}/accounts/${accountId}/workers/subdomain`,
     { headers: { Authorization: `Bearer ${cfToken}` } }
   );
   const data = await res.json().catch(() => ({}));
@@ -23,7 +23,7 @@ export async function getAccountSubdomain(cfToken, accountId) {
  * @param {{cfToken:string, accountId:string, scriptName:string, code:string}} params
  * @returns {Promise<object>} Cloudflare API 返回的 result
  */
-export async function deployWorker({ cfToken, accountId, scriptName, code }) {
+export async function deployWorker({ cfToken, accountId, scriptName, code, apiBase = 'https://api.cloudflare.com/client/v4' }) {
   // 部署前校验：必须是合法的 Worker 代码（ES Module 或 service worker），防止垃圾内容上传
   const isModule = /export\s+default/.test(code);
   const isValidWorker = isModule || /addEventListener\s*\(\s*['"]fetch/.test(code);
@@ -56,7 +56,7 @@ export async function deployWorker({ cfToken, accountId, scriptName, code }) {
   body += `\r\n--${boundary}--\r\n`;
 
   const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${scriptName}`,
+    `${apiBase}/accounts/${accountId}/workers/scripts/${scriptName}`,
     {
       method: 'PUT',
       headers: {
@@ -76,7 +76,7 @@ export async function deployWorker({ cfToken, accountId, scriptName, code }) {
   // 启用 workers.dev 访问（幂等；失败不阻塞部署结果）
   try {
     await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${scriptName}/subdomain`,
+      `${apiBase}/accounts/${accountId}/workers/scripts/${scriptName}/subdomain`,
       {
         method: 'POST',
         headers: {

@@ -22,6 +22,7 @@ import {
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
 import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes } from './tools.js';
+import { triggerCnbBuild } from './cnb.js';
 import { deployWorker, getAccountSubdomain, testCloudflareConnection, deleteWorker, fetchWorkerCode, listWorkers } from './deploy.js';
 
 export default {
@@ -33,7 +34,9 @@ export default {
       if (url.pathname.startsWith('/api/')) {
         // 访问密码鉴权：登录与状态检查接口豁免，其余 API 需携带有效 token
         const AUTH_FREE = ['/api/auth/login', '/api/auth/check'];
-        if (!AUTH_FREE.includes(url.pathname)) {
+        // CNB 外部执行器回调用任务自身 token 鉴权，不走访问密码
+        const isTaskEndpoint = url.pathname.startsWith('/api/tasks/');
+        if (!AUTH_FREE.includes(url.pathname) && !isTaskEndpoint) {
           const token = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
           const authed = await checkAuth(store, token);
           if (!authed) {
@@ -97,6 +100,10 @@ async function handleApi(request, url, env, store) {
         hasCfToken: !!settings.cfToken,
         cfAccountId: settings.cfAccountId || '',
         cfSubdomain: settings.cfSubdomain || '',
+        cnbRepo: settings.cnbRepo || '',
+        cnbBranch: settings.cnbBranch || 'main',
+        cnbTokenMasked: maskKey(settings.cnbToken),
+        hasCnb: !!(settings.cnbRepo && settings.cnbToken),
       },
       oauth: publicOAuth(oauth),
       projects,
@@ -116,6 +123,9 @@ async function handleApi(request, url, env, store) {
       cfToken: String(body.cfToken || '').trim() || settings.cfToken || '',
       cfAccountId: String(body.cfAccountId || '').trim() || settings.cfAccountId || '',
       cfSubdomain: settings.cfSubdomain || '',
+      cnbRepo: String(body.cnbRepo || '').trim() || settings.cnbRepo || '',
+      cnbToken: String(body.cnbToken || '').trim() || settings.cnbToken || '',
+      cnbBranch: String(body.cnbBranch || '').trim() || settings.cnbBranch || 'main',
     };
 
     if (!next.openaiBaseUrl || !next.openaiKey || !next.openaiModel) {
@@ -147,6 +157,10 @@ async function handleApi(request, url, env, store) {
         hasCfToken: !!next.cfToken,
         cfAccountId: next.cfAccountId,
         cfSubdomain: next.cfSubdomain,
+        cnbRepo: next.cnbRepo,
+        cnbBranch: next.cnbBranch,
+        cnbTokenMasked: maskKey(next.cnbToken),
+        hasCnb: !!(next.cnbRepo && next.cnbToken),
       },
     });
   }
@@ -440,7 +454,7 @@ async function handleApi(request, url, env, store) {
   }
 
   // ============ 项目子操作：chat / chat/stream / deploy / code / clear ============
-  const actionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/(chat(?:\/stream)?|deploy|code|clear)$/);
+  const actionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/(chat(?:\/stream|\/async)?|deploy|code|clear)$/);
   if (actionMatch) {
     const id = actionMatch[1];
     const action = actionMatch[2];
@@ -450,6 +464,9 @@ async function handleApi(request, url, env, store) {
     }
     if (action === 'chat/stream' && method === 'POST') {
       return await streamChatAction(request, store, id);
+    }
+    if (action === 'chat/async' && method === 'POST') {
+      return await asyncChatAction(request, store, id, `${url.protocol}//${url.host}`);
     }
     if (action === 'deploy' && method === 'POST') {
       return await deployAction(store, id);
@@ -475,7 +492,237 @@ async function handleApi(request, url, env, store) {
     }
   }
 
+  // ============ CNB 外部执行器任务（runner 用任务 token 鉴权，不走访问密码） ============
+  const taskProgressMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/progress$/);
+  if (taskProgressMatch && method === 'POST') {
+    return await taskProgressAction(store, taskProgressMatch[1], await readBody());
+  }
+  const taskResultMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/result$/);
+  if (taskResultMatch && method === 'POST') {
+    return await taskResultAction(store, taskResultMatch[1], await readBody());
+  }
+  const taskFetchMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
+  if (taskFetchMatch && method === 'GET') {
+    return await taskFetchAction(store, taskFetchMatch[1], url);
+  }
+
   return json({ error: '接口不存在' }, 404);
+}
+
+/**
+ * 异步对话（方案 B：CNB 外部执行器）
+ * - 保存用户消息 → 生成一次性任务（含 LLM 配置与 Cloudflare 凭据快照）→ 触发 CNB 流水线 → 立即返回
+ * - CNB runner（agent-runner/run.js，无时长限制）执行 LLM 循环/工具/部署/冒烟，结果回调写回项目
+ * - 前端轮询 chat-status 获取实时进度（stage/note），任务完成时状态清除并刷新项目
+ */
+async function asyncChatAction(request, store, id, baseUrl) {
+  const project = await store.getProject(id);
+  if (!project) return json({ error: '项目不存在' }, 404);
+
+  const body = await request.json().catch(() => ({}));
+  const message = String(body.message || '').trim();
+  if (!message) return json({ error: '消息不能为空' }, 400);
+
+  const settings = await store.getSettings();
+  if (!settings.openaiBaseUrl || !settings.openaiKey || !settings.openaiModel) {
+    return json({ error: '请先在「设置」中配置 OpenAI Base URL、Key 和模型' }, 400);
+  }
+  if (!settings.cnbRepo || !settings.cnbToken) {
+    return json({ error: '尚未配置 CNB 云构建（设置 → ④ CNB：仓库路径 + API Token），无法使用后台长任务对话；或使用普通流式对话' }, 400);
+  }
+
+  // 用户消息立即持久化（重试去重；即使后续失败，切换页面后记录也不丢失）
+  const lastMsg = project.history[project.history.length - 1];
+  if (lastMsg && lastMsg.role === 'user' && lastMsg.content === message) {
+    project.history.pop();
+  }
+  project.history.push({ role: 'user', content: message });
+  project.updatedAt = Date.now();
+  await store.saveProject(project);
+
+  await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
+  await store.setChatStatus(id, { status: 'running', executor: 'cnb', taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
+
+  // 解析 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
+  let cf;
+  try {
+    const cred = await getCredentials(store, settings);
+    cf = { token: cred.token, accountId: cred.accountId };
+    if (!settings.cfSubdomain) {
+      const r = await getAccountSubdomain(cf.token, cf.accountId);
+      settings.cfSubdomain = r.subdomain;
+      await store.saveSettings(settings);
+    }
+    cf.subdomain = settings.cfSubdomain;
+  } catch (e) {
+    await store.clearChatStatus(id);
+    return json({ error: `Cloudflare 凭据不可用：${e.message}` }, 400);
+  }
+
+  // 任务快照：一次性 token，LLM Key / CF Token 只经构建器 → runner 的单次拉取，不进 CNB 环境变量
+  const taskId = crypto.randomUUID();
+  const taskToken = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+  const task = {
+    id: taskId,
+    projectId: id,
+    token: taskToken,
+    createdAt: Date.now(),
+    autoDeploy: body.autoDeploy !== false,
+    userMessage: message,
+    workerName: project.workerName,
+    url: project.url || '',
+    messages: buildMessages(project),
+    settings: {
+      openaiBaseUrl: settings.openaiBaseUrl,
+      openaiKey: settings.openaiKey,
+      openaiModel: settings.openaiModel,
+      openaiApiType: settings.openaiApiType || 'chat',
+    },
+    cf,
+    cnbSn: '',
+    status: 'queued',
+  };
+  await store.saveTask(task, 7200);
+
+  // 触发 CNB 流水线（事件 api_trigger_builder 需在仓库 .cnb.yml 中定义）
+  try {
+    const r = await triggerCnbBuild({
+      repo: settings.cnbRepo,
+      token: settings.cnbToken,
+      branch: settings.cnbBranch || 'main',
+      taskId,
+      taskToken,
+      baseUrl,
+    });
+    task.cnbSn = r?.sn || r?.data?.sn || r?.result?.sn || '';
+    task.status = 'running';
+    await store.saveTask(task, 7200);
+  } catch (e) {
+    await store.deleteTask(taskId);
+    project.history.push({ role: 'system', content: `⚠️ CNB 任务提交失败：${e.message}` });
+    project.updatedAt = Date.now();
+    await store.saveProject(project);
+    await store.clearChatStatus(id);
+    return json({ error: e.message }, 502);
+  }
+
+  await store.setChatStatus(id, {
+    status: 'running',
+    executor: 'cnb',
+    taskId,
+    startedAt: Date.now(),
+    stage: 'queued',
+    round: 0,
+    note: '任务已提交到 CNB 云构建，排队等待执行…',
+    updatedAt: Date.now(),
+  });
+  return json({ ok: true, taskId, status: 'queued' });
+}
+
+/** CNB runner 拉取任务（一次性 token 鉴权） */
+async function taskFetchAction(store, taskId, url) {
+  const token = url.searchParams.get('token') || '';
+  const task = await store.getTask(taskId);
+  if (!task || !task.token || task.token !== token) {
+    return json({ error: '任务不存在或令牌无效' }, 404);
+  }
+  await store.touchTask(taskId);
+  return json({
+    taskId: task.id,
+    workerName: task.workerName,
+    url: task.url,
+    autoDeploy: task.autoDeploy,
+    messages: task.messages,
+    settings: task.settings,
+    cf: task.cf,
+  });
+}
+
+/** CNB runner 上报进度：更新 chat-status，前端轮询即可看到实时阶段 */
+async function taskProgressAction(store, taskId, body) {
+  const token = String(body.token || '');
+  const task = await store.getTask(taskId);
+  if (!task || task.token !== token) {
+    return json({ error: '任务不存在或令牌无效' }, 404);
+  }
+  await store.touchTask(taskId);
+  await store.setChatStatus(task.projectId, {
+    status: 'running',
+    executor: 'cnb',
+    taskId,
+    startedAt: Date.now(),
+    stage: String(body.stage || 'running'),
+    round: Number(body.round) || 0,
+    note: String(body.note || '执行中…'),
+    updatedAt: Date.now(),
+  });
+  return json({ ok: true });
+}
+
+/** CNB runner 回传结果：写回对话历史/代码/版本/记忆，并清理状态 */
+async function taskResultAction(store, taskId, body) {
+  const token = String(body.token || '');
+  const task = await store.getTask(taskId);
+  if (!task || task.token !== token) {
+    return json({ error: '任务不存在或令牌无效' }, 404);
+  }
+  const r = await finishAsyncTask(store, task, body);
+  return json(r.ok ? { ok: true } : { error: r.error }, r.ok ? 200 : 500);
+}
+
+/** 把 CNB runner 的执行结果合并进项目（与流式路径的落库逻辑保持一致） */
+async function finishAsyncTask(store, task, payload) {
+  const project = await store.getProject(task.projectId);
+  if (!project) return { ok: false, error: '项目不存在' };
+
+  const error = String(payload.error || '').trim();
+  const reply = String(payload.reply || '').trim();
+  if (error) {
+    project.history.push({ role: 'system', content: `⚠️ 对话任务执行失败：${error.slice(0, 500)}` });
+  } else {
+    if (reply) project.history.push({ role: 'assistant', content: reply });
+    const code = payload.code || null;
+    if (code) project.code = code;
+    const deployed = !!payload.deployed;
+    const deployError = payload.deployError ? String(payload.deployError) : '';
+    if (deployed && payload.url) {
+      project.url = payload.url;
+      project.deployed = true;
+      project.deployedAt = Date.now();
+      project.history.push({ role: 'system', content: `✅ 已自动部署到：${payload.url}` });
+    } else if (deployError) {
+      project.history.push({
+        role: 'system',
+        content: `⚠️ 代码已生成，但自动部署失败：${deployError}（可稍后在「代码」页手动重新部署）`,
+      });
+    }
+    const toolResults = Array.isArray(payload.toolResults) ? payload.toolResults : [];
+    toolResults.forEach((r, i) => {
+      project.history.push({ role: 'system', content: formatToolResult(r, i + 1) });
+    });
+    const smokeTest = payload.smokeTest || null;
+    if (smokeTest) {
+      if (!smokeTest.error && smokeTest.status < 400) {
+        project.history.push({
+          role: 'system',
+          content: `🌐 冒烟测试：${smokeTest.route === '/' ? '根路径 /' : smokeTest.route} → HTTP ${smokeTest.status} ✅`,
+        });
+      } else {
+        project.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+      }
+    }
+    if (deployed) {
+      // 先更新项目功能记忆，再存档版本（版本快照包含最新记忆）
+      const settings = await store.getSettings();
+      await updateProjectMemory(store, settings, project, task.userMessage);
+      pushVersion(project, String(task.userMessage || '对话生成并部署').slice(0, 40) || '对话生成并部署', payload.url || '');
+    }
+  }
+  project.updatedAt = Date.now();
+  await store.saveProject(project);
+  await store.clearChatStatus(project.id);
+  await store.deleteTask(task.id);
+  return { ok: true };
 }
 
 /** 对话：调用大模型 → 提取代码 → 自动部署 */

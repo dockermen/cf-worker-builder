@@ -1,0 +1,213 @@
+/**
+ * CNB 外部执行器（方案 B）
+ *
+ * 在 cnb.cool 云原生构建（node:20 容器，无 Workers 长连接超时限制）中执行
+ * 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」完整 Agent 循环，解决构建器
+ * Workers 同步长对话容易超时/中断的问题。
+ *
+ * 运行方式（由根目录 .cnb.yml 的 api_trigger_builder 事件触发）：
+ *   node agent-runner/run.js
+ *
+ * 环境变量（由构建器通过 CNB StartBuild 的 env 传入）：
+ *   TASK_ID            任务 ID
+ *   TASK_TOKEN         一次性任务令牌（用于向构建器拉取任务/上报进度/回传结果）
+ *   BUILDER_BASE_URL   构建器地址，如 https://builder.logg.asia
+ *
+ * LLM Key / Cloudflare Token 不会出现在 CNB 环境变量或构建日志中，
+ * 而是通过一次性 token 从构建器拉取，任务结束后自动销毁。
+ */
+
+import { callChatCompletion } from '../src/agent.js';
+import { extractCode } from '../src/util.js';
+import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes } from '../src/tools.js';
+import { deployWorker } from '../src/deploy.js';
+
+const TASK_ID = process.env.TASK_ID || '';
+const TASK_TOKEN = process.env.TASK_TOKEN || '';
+const BASE_URL = String(process.env.BUILDER_BASE_URL || '').replace(/\/+$/, '');
+
+const MAX_ROUNDS = 5; // 工具递归轮次上限（与构建器流式路径一致）
+const MAX_LLM_MS = 300000; // 单轮 LLM 超时 5 分钟（比 Workers 内 90 秒宽裕很多）
+
+function log(...args) {
+  console.log(`[runner ${TASK_ID}]`, ...args);
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** 带重试的 POST（进度/结果回调，网络抖动时重试） */
+async function postWithRetry(path, payload, tries = 3) {
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(`${BASE_URL}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: TASK_TOKEN, ...payload }),
+      });
+      if (res.ok) return await res.json().catch(() => ({}));
+      lastErr = new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    } catch (e) {
+      lastErr = e;
+    }
+    await sleep(2000 * (i + 1));
+  }
+  throw lastErr || new Error('POST 失败');
+}
+
+async function reportProgress(payload) {
+  try {
+    await postWithRetry(`/api/tasks/${TASK_ID}/progress`, payload, 2);
+  } catch (e) {
+    log('进度上报失败（忽略继续）:', e.message);
+  }
+}
+
+async function reportResult(payload) {
+  await postWithRetry(`/api/tasks/${TASK_ID}/result`, payload, 4);
+}
+
+/** LLM 调用（带重试，超时放宽到 5 分钟） */
+async function callLLM(settings, messages) {
+  let lastErr = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await callChatCompletion(settings, messages, MAX_LLM_MS);
+    } catch (e) {
+      lastErr = e;
+      log(`LLM 调用失败（第 ${i + 1} 次）:`, e.message);
+      await sleep(3000 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
+/** 智能冒烟测试：探测代码中的路由，找到第一个正常响应（与构建器逻辑一致） */
+async function smartSmokeTest(url, code) {
+  const routes = extractRoutes(code || '');
+  let last = null;
+  for (const r of routes) {
+    const target = r === '/' ? url : `${url}${r}`;
+    const res = await executeHttpTest(`GET ${target}`);
+    last = { ...res, route: r };
+    if (!res.error && res.status < 400) break;
+  }
+  return last;
+}
+
+async function main() {
+  if (!TASK_ID || !TASK_TOKEN || !BASE_URL) {
+    throw new Error('缺少环境变量：TASK_ID / TASK_TOKEN / BUILDER_BASE_URL');
+  }
+
+  // 1. 拉取任务（一次性 token）
+  log('拉取任务…');
+  const fetchRes = await fetch(`${BASE_URL}/api/tasks/${TASK_ID}?token=${TASK_TOKEN}`);
+  if (!fetchRes.ok) {
+    throw new Error(`拉取任务失败（${fetchRes.status}）：${(await fetchRes.text().catch(() => '')).slice(0, 300)}`);
+  }
+  const task = await fetchRes.json();
+  log('任务已获取：worker =', task.workerName, '，autoDeploy =', task.autoDeploy);
+
+  await reportProgress({ stage: 'thinking', round: 1, note: '已连接构建器，开始第 1 轮生成…' });
+
+  // 2. Agent 递归循环（LLM → 工具 → 继续，直到无工具调用或到达轮次上限）
+  const messages = Array.isArray(task.messages) ? task.messages : [];
+  const allRoundTexts = [];
+  const toolResults = [];
+  let code = null;
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    await reportProgress({ stage: 'thinking', round: round + 1, note: `第 ${round + 1} 轮生成中…` });
+    const reply = await callLLM(task.settings, messages);
+    messages.push({ role: 'assistant', content: reply });
+    allRoundTexts.push(reply);
+    log(`第 ${round + 1} 轮完成，输出 ${reply.length} 字`);
+
+    const specs = extractAllHttpTests(reply);
+    if (!specs.length) break;
+
+    for (const spec of specs) {
+      await reportProgress({
+        stage: 'tool',
+        round: round + 1,
+        note: `正在执行工具：${String(spec).split('\n')[0] || 'HTTP 请求'}`,
+      });
+      const r = await executeHttpTest(spec);
+      toolResults.push(r);
+      messages.push({ role: 'system', content: formatToolResult(r, toolResults.length) });
+      log('工具结果:', r.status || r.error, r.url || '');
+    }
+
+    if (round >= MAX_ROUNDS - 1) {
+      await reportProgress({ stage: 'tool', round: round + 1, note: `已达到工具自动调用轮次上限（${MAX_ROUNDS}）` });
+      break;
+    }
+  }
+
+  // 3. 提取代码
+  const fullReply = allRoundTexts.join('\n');
+  code = extractCode(fullReply);
+  if (code) log('已提取 Worker 代码（', code.length, '字符）');
+  else log('本轮未提取到 Worker 代码');
+
+  // 4. 部署 + 冒烟测试
+  let deployed = false;
+  let url = task.url || '';
+  let deployError = null;
+  let smokeTest = null;
+
+  if (code && task.autoDeploy !== false) {
+    await reportProgress({ stage: 'deploying', note: '正在部署到 Cloudflare Workers…' });
+    try {
+      await deployWorker({
+        cfToken: task.cf.token,
+        accountId: task.cf.accountId,
+        scriptName: task.workerName,
+        code,
+        // 本地/联调可用 CF_API_BASE 指向 mock 服务；生产默认 Cloudflare 官方 API
+        apiBase: process.env.CF_API_BASE || undefined,
+      });
+      deployed = true;
+      url = `https://${task.workerName}.${task.cf.subdomain}.workers.dev`;
+      log('部署成功:', url);
+      try {
+        smokeTest = await smartSmokeTest(url, code);
+      } catch (e) {
+        log('冒烟测试异常（忽略）:', e.message);
+      }
+    } catch (e) {
+      deployError = e.message;
+      log('部署失败:', e.message);
+    }
+  }
+
+  // 5. 回传结果（构建器负责：写回历史/记忆/版本并清理状态）
+  await reportResult({
+    reply: fullReply,
+    code: code || null,
+    deployed,
+    url,
+    deployError: deployError || null,
+    toolResults,
+    smokeTest: smokeTest || null,
+  });
+  log('结果已回传，任务完成');
+}
+
+main()
+  .catch(async (e) => {
+    console.error('[runner] 任务失败:', e && e.message ? e.message : e);
+    try {
+      await reportResult({ error: String((e && e.message) || e).slice(0, 500) });
+    } catch (e2) {
+      console.error('[runner] 结果回传失败:', e2.message);
+      process.exit(1);
+    }
+  })
+  .finally(() => {
+    // 强制退出：确保 fetch 等未决句柄不阻塞容器结束
+    setTimeout(() => process.exit(0), 3000);
+  });
