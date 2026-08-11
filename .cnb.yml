@@ -11,9 +11,14 @@
 #
 # 可选环境变量：
 #   CNB_PROXY_SUB  Clash 代理订阅地址（构建器设置里配置）。提供后本流水线会：
-#                  ① 安装 mihomo（Clash Meta 内核）；② 下载订阅生成配置（自动补 mixed-port: 7890）；
+#                  ① 安装 mihomo（Clash Meta 内核）；② 下载订阅并转换生成配置（自动补 mixed-port: 7890）；
 #                  ③ 启动本地代理并设置 CLASH_PROXY=http://127.0.0.1:7890。
 #                  用于解决 CNB 容器（大陆）访问 Cloudflare / workers.dev 网络不通的问题。
+#
+# 日志审阅说明：本流水线拆分为 3 个命名步骤（与 GitHub Actions 的 step 类似，日志按步骤分组）：
+#   1/3 准备环境（Node / 依赖）
+#   2/3 配置 Clash 代理（可选，无订阅自动跳过）
+#   3/3 执行构建器 Agent 任务
 #
 # 注意：仓库需在 cnb.cool「仓库设置 → 云原生构建」中勾选「允许自动触发」。
 
@@ -24,76 +29,113 @@ main:
         volumes:
           - /root/.npm:copy-on-write
       stages:
-        - |
-          set -e
-          echo "== 准备环境 =="
-          apt-get update -qq >/dev/null 2>&1 || true
-          apt-get install -y -qq curl gzip ca-certificates >/dev/null 2>&1 || true
-          # undici：Clash 代理下 Node fetch 需要 ProxyAgent
-          npm i undici --no-save --no-package-lock --silent >/dev/null 2>&1 || true
+        # ===================== 步骤 1/3：准备环境 =====================
+        - name: 1/3 准备环境（Node / 依赖）
+          script: |
+            set -e
+            echo "---- [$(date '+%H:%M:%S')] 步骤 1/3：准备环境 ----"
+            echo "Node: $(node -v) | npm: $(npm -v) | 工作目录: $(pwd)"
+            echo "任务参数: TASK_ID=${TASK_ID:0:8}... BUILDER_BASE_URL=${BUILDER_BASE_URL:-<未设置>}"
+            echo ">>> [1/3] 安装系统工具（curl / gzip / ca-certificates）..."
+            apt-get update -qq >/dev/null 2>&1 || true
+            apt-get install -y -qq curl gzip ca-certificates >/dev/null 2>&1 || true
+            echo ">>> [2/3] 安装 undici（Clash 代理 ProxyAgent 依赖）..."
+            npm i undici --no-save --no-package-lock --silent >/dev/null 2>&1 || echo "  !! undici 安装失败（不影响直连模式）"
+            echo ">>> [3/3] 校验 undici..."
+            node -e "try{require.resolve('undici');console.log('  undici 已安装 ✅')}catch(e){console.log('  undici 未安装（代理不可用，将直连）')}"
+            echo "---- 步骤 1/3 完成 ----"
 
-          # ===== Clash 代理（可选，CNB_PROXY_SUB 由构建器设置传入） =====
-          # 关键：代理必须真实可用才 export CLASH_PROXY，否则降级直连，
-          # 避免「假启动」导致 runner 全部 ECONNREFUSED。
-          if [ -n "$CNB_PROXY_SUB" ]; then
-            echo "== 检测到代理订阅，准备 Clash（mihomo） =="
-            # 1) 下载 mihomo（仅一次）
+        # ===================== 步骤 2/3：配置 Clash 代理（可选） =====================
+        - name: 2/3 配置 Clash 代理（可选）
+          script: |
+            set -e
+            echo "---- [$(date '+%H:%M:%S')] 步骤 2/3：配置 Clash 代理 ----"
+            if [ -z "${CNB_PROXY_SUB:-}" ]; then
+              echo "== 未配置代理订阅（CNB_PROXY_SUB 为空），跳过本步骤，使用直连 =="
+              echo "---- 步骤 2/3 跳过 ----"
+              exit 0
+            fi
+            echo "== 检测到代理订阅，准备 mihomo =="
+            # 1) 下载 mihomo（仅一次，成功后缓存于 /tmp）
             if [ ! -x /tmp/mihomo ]; then
+              echo ">>> [1/4] 下载 mihomo v1.18.10（linux amd64）..."
               if curl -sL --max-time 120 "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.10/mihomo-linux-amd64-v1.18.10.gz" -o /tmp/mihomo.gz \
                   && gunzip -f /tmp/mihomo.gz && chmod +x /tmp/mihomo; then
-                echo "mihomo 已安装: $(/tmp/mihomo -v 2>/dev/null | head -1 || echo ok)"
+                echo "  mihomo 版本: $(/tmp/mihomo -v 2>/dev/null | head -1 || echo 'ok')"
               else
-                echo "!! mihomo 下载失败，跳过代理（将直连）"
+                echo "  !! mihomo 下载失败，跳过代理（将直连）"
+                echo "---- 步骤 2/3 完成（未启用代理） ----"
+                exit 0
               fi
+            else
+              echo ">>> [1/4] mihomo 已存在（复用缓存）: $(/tmp/mihomo -v 2>/dev/null | head -1 || echo ok)"
             fi
-            # 2) 下载订阅并生成 mihomo 配置（标准 yaml 直接用；vless/vmess/hy2 等 URI 订阅自动转换）
-            if [ -x /tmp/mihomo ] && curl -sL --max-time 120 "$CNB_PROXY_SUB" -o /tmp/sub_raw && [ -s /tmp/sub_raw ]; then
-              echo "订阅已下载（$(wc -c < /tmp/sub_raw) 字节）"
+            # 2) 下载订阅并转换
+            echo ">>> [2/4] 下载订阅..."
+            if curl -sL --max-time 120 "$CNB_PROXY_SUB" -o /tmp/sub_raw && [ -s /tmp/sub_raw ]; then
+              echo "  订阅大小: $(wc -c < /tmp/sub_raw) 字节"
               if head -1 /tmp/sub_raw | grep -qE '^(proxies|mixed-port|port|proxy-groups)'; then
+                echo "  订阅格式: 标准 Clash YAML（原样使用）"
                 cp /tmp/sub_raw /tmp/clash-config.yaml
               else
-                node agent-runner/sub2clash.js /tmp/sub_raw > /tmp/clash-config.yaml 2>/tmp/sub2clash.log || echo "!! 订阅转换失败（详见 /tmp/sub2clash.log）"
-              fi
-              # 3) 必须包含 proxies 节点，补 mixed-port 后启动
-              if grep -q '^proxies:' /tmp/clash-config.yaml; then
-                grep -q '^mixed-port:' /tmp/clash-config.yaml || sed -i '1i mixed-port: 7890' /tmp/clash-config.yaml
-                mkdir -p /tmp/clash && cp /tmp/clash-config.yaml /tmp/clash/config.yaml
-                # log-level 临时调为 info：让监听日志可见（默认 warning 会过滤掉 Mixed server 启动日志）
-                grep -q '^log-level:' /tmp/clash/config.yaml && sed -i 's/^log-level:.*/log-level: info/' /tmp/clash/config.yaml || sed -i '1i log-level: info' /tmp/clash/config.yaml
-                /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
-                sleep 10
-                # 4) 验证 mihomo 已在 7890 监听。
-                #    注意：CNB 容器的 /proc/net/tcp 可能查不到 socket 记录（此前实测日志显示
-                #    Mixed proxy listening 成功但 /proc 无记录），因此以 mihomo 自身日志为准 +
-                #    Node TCP 连接测试（不依赖 /proc、nc、ss）。
-                PORT_OK=0
-                # 方式1（最可靠）：mihomo 日志明确打印监听成功
-                grep -q 'proxy listening at: 127.0.0.1:7890' /tmp/clash.log 2>/dev/null && PORT_OK=1
-                # 方式2：Node TCP 握手测试（只测连接，不要求节点连通）
-                if [ "$PORT_OK" != "1" ]; then
-                  node -e "const s=require('net').connect(7890,'127.0.0.1',()=>{process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null && PORT_OK=1
-                fi
-                # 方式3：nc / ss 兜底
-                if [ "$PORT_OK" != "1" ] && command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 7890 2>/dev/null; then
-                  PORT_OK=1
-                fi
-                if [ "$PORT_OK" = "1" ]; then
-                  export CLASH_PROXY=http://127.0.0.1:7890
-                  echo "== Clash 代理已启动（mihomo 监听 7890）：$CLASH_PROXY =="
-                  grep -i 'proxy listening at' /tmp/clash.log 2>/dev/null | tail -1 || true
-                else
-                  echo "!! Clash 代理启动失败（7890 未监听），降级直连。mihomo 日志："
-                  tail -30 /tmp/clash.log 2>/dev/null || true
-                  unset CLASH_PROXY
-                fi
-              else
-                echo "!! 生成的配置缺少 proxies 节点，无法使用，跳过代理（将直连）"
+                echo "  订阅格式: URI 节点列表 / base64 → 调用 sub2clash 转换"
+                node agent-runner/sub2clash.js /tmp/sub_raw > /tmp/clash-config.yaml 2>/tmp/sub2clash.log || echo "  !! 订阅转换失败（详见 /tmp/sub2clash.log）"
                 cat /tmp/sub2clash.log 2>/dev/null || true
               fi
             else
-              echo "!! 订阅下载失败或为空，跳过代理（将直连）"
+              echo "  !! 订阅下载失败或为空，跳过代理（将直连）"
+              echo "---- 步骤 2/3 完成（未启用代理） ----"
+              exit 0
             fi
-          fi
+            # 3) 生成配置并启动 mihomo
+            echo ">>> [3/4] 生成配置并启动 mihomo..."
+            if grep -q '^proxies:' /tmp/clash-config.yaml; then
+              grep -q '^mixed-port:' /tmp/clash-config.yaml || sed -i '1i mixed-port: 7890' /tmp/clash-config.yaml
+              grep -q '^log-level:' /tmp/clash-config.yaml && sed -i 's/^log-level:.*/log-level: info/' /tmp/clash-config.yaml || sed -i '1i log-level: info' /tmp/clash-config.yaml
+              echo "  节点数: $(grep -c '^  - name:' /tmp/clash-config.yaml) | 配置行数: $(wc -l < /tmp/clash-config.yaml)"
+              mkdir -p /tmp/clash && cp /tmp/clash-config.yaml /tmp/clash/config.yaml
+              /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
+              sleep 10
+              # 4) 验证监听（mihomo 日志为准 + Node TCP 测试；/proc/net/tcp 在 CNB 容器不可靠）
+              echo ">>> [4/4] 验证代理监听..."
+              PORT_OK=0
+              grep -q 'proxy listening at: 127.0.0.1:7890' /tmp/clash.log 2>/dev/null && PORT_OK=1
+              if [ "$PORT_OK" != "1" ]; then
+                node -e "const s=require('net').connect(7890,'127.0.0.1',()=>{process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null && PORT_OK=1
+              fi
+              if [ "$PORT_OK" = "1" ]; then
+                export CLASH_PROXY=http://127.0.0.1:7890
+                echo "  ✅ mihomo 监听 7890：$(grep 'proxy listening at' /tmp/clash.log | tail -1)"
+                echo "  ✅ CLASH_PROXY=$CLASH_PROXY"
+              else
+                echo "  !! 7890 未监听，降级直连。mihomo 日志尾部："
+                tail -30 /tmp/clash.log 2>/dev/null || true
+              fi
+            else
+              echo "  !! 生成的配置缺少 proxies 节点，跳过代理（将直连）"
+              cat /tmp/sub2clash.log 2>/dev/null || true
+            fi
+            echo "---- 步骤 2/3 完成 ----"
 
-          echo "== 执行构建器 Agent 任务 =="
-          node agent-runner/run.js
+        # ===================== 步骤 3/3：执行构建器 Agent 任务 =====================
+        - name: 3/3 执行构建器 Agent 任务
+          script: |
+            set -e
+            echo "---- [$(date '+%H:%M:%S')] 步骤 3/3：执行构建器 Agent 任务 ----"
+            # 若步骤 2 已启动 mihomo 但进程未跨步骤存活，则在此重新确保代理可用
+            if [ -n "${CNB_PROXY_SUB:-}" ] && [ -f /tmp/clash/config.yaml ]; then
+              if ! node -e "const s=require('net').connect(7890,'127.0.0.1',()=>{process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null; then
+                echo ">>> 7890 未监听，重新启动 mihomo..."
+                /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
+                sleep 6
+              fi
+              if node -e "const s=require('net').connect(7890,'127.0.0.1',()=>{process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null; then
+                export CLASH_PROXY=http://127.0.0.1:7890
+                echo "代理就绪: CLASH_PROXY=$CLASH_PROXY"
+              fi
+            fi
+            echo "运行环境: CLASH_PROXY=${CLASH_PROXY:-<未设置，直连>} | TASK_ID=${TASK_ID:0:8}..."
+            echo ">>> 启动 runner（agent-runner/run.js）..."
+            node agent-runner/run.js
+            echo "---- 步骤 3/3 完成 ----"
+            echo "==== [$(date '+%H:%M:%S')] 流水线全部结束 ===="

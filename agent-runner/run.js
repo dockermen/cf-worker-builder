@@ -78,7 +78,7 @@ if (CLASH_PROXY) {
 }
 
 function log(...args) {
-  console.log(`[runner ${TASK_ID}]`, ...args);
+  console.log(`[runner ${TASK_ID}] [${new Date().toISOString().slice(11, 19)}]`, ...args);
 }
 
 function sleep(ms) {
@@ -286,6 +286,7 @@ async function main() {
   log(`构建器地址：${BASE_URL}${FALLBACK_IP ? `（备用 IP：${FALLBACK_IP}）` : ''}`);
 
   // 1. 拉取任务（一次性 token，带 DNS 诊断与重试）
+  log('========== 步骤 1/4：拉取任务 ==========');
   log('拉取任务…');
   const task = await fetchTask();
   log('任务已获取：worker =', task.workerName, '，autoDeploy =', task.autoDeploy);
@@ -293,6 +294,7 @@ async function main() {
   await reportProgress({ stage: 'thinking', round: 1, note: '已连接构建器，开始第 1 轮生成…' });
 
   // 2. Agent 递归循环（LLM → 工具 → 继续，直到无工具调用或到达轮次上限）
+  log('========== 步骤 2/4：Agent 生成循环（最多 5 轮） ==========');
   const messages = Array.isArray(task.messages) ? task.messages : [];
   const allRoundTexts = [];
   const toolResults = [];
@@ -354,12 +356,14 @@ async function main() {
   }
 
   // 3. 提取代码
+  log('========== 步骤 3/4：提取代码 ==========');
   const fullReply = allRoundTexts.join('\n');
   code = extractCode(fullReply);
   if (code) log('已提取 Worker 代码（', code.length, '字符）');
   else log('本轮未提取到 Worker 代码');
 
   // 4. 部署 + 冒烟测试
+  log('========== 步骤 4/4：部署与冒烟测试 ==========');
   let deployed = false;
   let url = task.url || '';
   let deployError = null;
@@ -393,6 +397,7 @@ async function main() {
   }
 
   // 5. 回传结果（构建器负责：写回历史/记忆/版本并清理状态）
+  log('========== 完成：回传结果到构建器 ==========');
   await reportResult({
     reply: fullReply,
     code: code || null,
