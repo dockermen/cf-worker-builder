@@ -301,6 +301,8 @@
     background: rgba(255,200,87,.1); border: 1px solid rgba(255,200,87,.35);
     color: var(--yellow); font-size: 12.5px;
   }
+  .chat-resume.actionable { cursor: pointer; border: 1px solid rgba(255,185,60,.6); background: rgba(255,185,60,.12); color: #ffd98a; }
+  .chat-resume.actionable.cnb { border-color: rgba(120,160,255,.6); background: rgba(120,160,255,.1); color: #a8c6ff; }
   .chat-resume.ok { background: rgba(61,220,151,.1); border-color: rgba(61,220,151,.35); color: var(--green); }
 
   /* ---------- 移动端适配 ---------- */
@@ -1227,11 +1229,32 @@ function showChatResume(text, isOk = false) {
   if (!bar) return;
   bar.textContent = text;
   bar.className = 'chat-resume' + (isOk ? ' ok' : '');
+  bar.onclick = null;
+}
+
+/** 后台执行器长时间无心跳：提示可点击「结束等待」，清除卡死状态后刷新 */
+function showChatResumeActionable(id, status) {
+  const bar = $('#chatResume');
+  if (!bar) return;
+  bar.textContent = '⚠️ 后台任务长时间无进展（执行器可能已中断）— 点击此处结束等待并重新发送';
+  bar.className = 'chat-resume actionable' + (status.executor === 'cnb' ? ' cnb' : '');
+  bar.onclick = async () => {
+    try {
+      await api(`/api/projects/${id}/chat-status/clear`, { method: 'POST' });
+      hideChatResume();
+      const d = await api(`/api/projects/${id}`);
+      if (state.project && state.project.id === id) {
+        state.project = d.project;
+        renderProject(d.project);
+      }
+      toast('已结束等待，可重新发送消息');
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 function hideChatResume() {
   const bar = $('#chatResume');
-  if (bar) bar.className = 'chat-resume hidden';
+  if (bar) { bar.className = 'chat-resume hidden'; bar.onclick = null; }
 }
 
 function renderChatResume(status) {
@@ -1286,9 +1309,15 @@ async function watchChatStatus(id) {
             }
             toast(deployUrl ? '✅ 已自动部署：' + deployUrl : '💬 后台对话已完成，记录已刷新');
           } else if (isChatStale(r2.status)) {
-            // 长时间无心跳 ≠ 中断：Workers 等待模型输出时定时器冻结，无进展属正常现象。
-            // 继续等待轮询，直到任务真正结束（状态清除）或用户重发。
-            showChatResume('⏳ 任务仍在后台运行（模型可能正在思考，长时间无输出属正常），完成后自动刷新；若长时间无结果可重新发送');
+            // 后台执行器（GitHub/CNB）长时间无心跳：执行器可能已挂掉（代理失败/构建失败且回调失败），
+            // 提供「结束等待」操作；排队/准备阶段（runner 未启动）不算中断，继续等待。
+            const isExecutor = r2.status.executor === 'github' || r2.status.executor === 'cnb';
+            const isWaiting = r2.status.stage === 'queued' || r2.status.stage === 'preparing';
+            if (isExecutor && !isWaiting) {
+              showChatResumeActionable(id, r2.status);
+            } else {
+              showChatResume('⏳ 任务仍在后台运行（模型可能正在思考，长时间无输出属正常），完成后自动刷新；若长时间无结果可重新发送');
+            }
           } else {
             renderChatResume(r2.status); // 实时进度
           }

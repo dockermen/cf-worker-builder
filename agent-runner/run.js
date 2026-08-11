@@ -49,7 +49,18 @@ if (CLASH_PROXY) {
     const { ProxyAgent } = await import('undici');
     proxyAgent = new ProxyAgent(CLASH_PROXY);
     proxiedFetch = (url, opts = {}) => fetch(url, { ...opts, dispatcher: proxyAgent });
-    log(`已启用 Clash 代理：${CLASH_PROXY}（构建器/Cloudflare 请求走代理，LLM 直连）`);
+    // 代理健康检查：走代理请求构建器，失败则降级直连，避免「假代理」导致全部 ECONNREFUSED
+    try {
+      const probe = await proxiedFetch(`${BASE_URL}/api/auth/check`, { signal: AbortSignal.timeout(12000) });
+      if (probe.status < 500) {
+        log(`已启用 Clash 代理：${CLASH_PROXY}（构建器/Cloudflare 请求走代理，LLM 直连）`);
+      } else {
+        throw new Error(`probe HTTP ${probe.status}`);
+      }
+    } catch (pe) {
+      proxiedFetch = fetch;
+      log(`⚠️ Clash 代理不可用（${pe && pe.message ? pe.message : pe}），已降级为直连`);
+    }
   } catch (e) {
     proxiedFetch = fetch;
     log(`⚠️ 已设置 CLASH_PROXY 但无法加载 undici（需 npm i undici），代理未生效：${e.message}`);

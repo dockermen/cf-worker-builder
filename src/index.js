@@ -482,6 +482,12 @@ async function handleApi(request, url, env, store) {
     const status = await store.getChatStatus(statusMatch[1]);
     return json({ status });
   }
+  // 手动结束卡死的后台任务（执行器挂了但状态未清时，前端提供「结束等待」按钮）
+  const statusClearMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status\/clear$/);
+  if (statusClearMatch && method === 'POST') {
+    await store.clearChatStatus(statusClearMatch[1]);
+    return json({ ok: true });
+  }
 
   // ============ 项目子操作：chat / chat/stream / deploy / code / clear ============
   const actionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/(chat(?:\/stream|\/async)?|deploy|code|clear)$/);

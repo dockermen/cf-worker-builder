@@ -92,7 +92,8 @@ export function makeStore(kv) {
   },
 
   async setChatStatus(id, status) {
-    await kv.put(`chat_status:${id}`, JSON.stringify(status), { expirationTtl: 900 });
+    // TTL 10 分钟：runner 心跳每 2 分钟续期；若执行器挂掉，状态自动过期，前端不再无限显示「执行中」
+    await kv.put(`chat_status:${id}`, JSON.stringify(status), { expirationTtl: 600 });
   },
 
   async clearChatStatus(id) {
