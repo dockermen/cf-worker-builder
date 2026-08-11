@@ -58,14 +58,17 @@ main:
               if grep -q '^proxies:' /tmp/clash-config.yaml; then
                 grep -q '^mixed-port:' /tmp/clash-config.yaml || sed -i '1i mixed-port: 7890' /tmp/clash-config.yaml
                 mkdir -p /tmp/clash && cp /tmp/clash-config.yaml /tmp/clash/config.yaml
+                # log-level 临时调为 info：让监听日志可见（默认 warning 会过滤掉 Mixed server 启动日志）
+                grep -q '^log-level:' /tmp/clash/config.yaml && sed -i 's/^log-level:.*/log-level: info/' /tmp/clash/config.yaml || sed -i '1i log-level: info' /tmp/clash/config.yaml
                 /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
-                sleep 6
+                sleep 8
                 # 4) 验证 mihomo 已在 7890 监听（仅查监听，不要求节点立刻连通；
                 #    节点可用性交给 url-test 组自动选择 + runner 健康检查兜底降级）
+                #    注意：mihomo 默认双栈监听 ::，端口记录在 /proc/net/tcp6，两个文件都要查
                 PORT_OK=0
                 if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 7890 2>/dev/null; then
                   PORT_OK=1
-                elif grep -qiE ':(CA1E|ca1e) ' /proc/net/tcp 2>/dev/null; then
+                elif grep -qiE ':(CA1E|ca1e)[[:space:]]' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
                   PORT_OK=1
                 elif command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':7890'; then
                   PORT_OK=1
@@ -73,9 +76,12 @@ main:
                 if [ "$PORT_OK" = "1" ]; then
                   export CLASH_PROXY=http://127.0.0.1:7890
                   echo "== Clash 代理已启动（mihomo 监听 7890）：$CLASH_PROXY =="
+                  grep -iE 'mixed.*(server|listening)|listening.*7890' /tmp/clash.log 2>/dev/null | tail -2 || true
                 else
                   echo "!! Clash 代理启动失败（7890 未监听），降级直连。mihomo 日志："
-                  tail -20 /tmp/clash.log 2>/dev/null || true
+                  tail -30 /tmp/clash.log 2>/dev/null || true
+                  echo "--- tcp/tcp6 中 7890(CA1E) 记录 ---"
+                  grep -i 'CA1E' /proc/net/tcp /proc/net/tcp6 2>/dev/null || echo "(无)"
                   unset CLASH_PROXY
                 fi
               else
