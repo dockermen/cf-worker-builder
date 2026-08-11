@@ -26,7 +26,7 @@ import https from 'node:https';
 import dns from 'node:dns/promises';
 import { callChatCompletion } from '../src/agent.js';
 import { extractCode } from '../src/util.js';
-import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes, detectProxyWorker } from '../src/tools.js';
+import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes, detectProxyWorker, parseHttpTestSpec } from '../src/tools.js';
 import { deployWorker } from '../src/deploy.js';
 import { browserFetchText } from './browser.js';
 
@@ -312,14 +312,31 @@ async function main() {
     if (!specs.length) break;
 
     for (const spec of specs) {
+      const parsedSpec = parseHttpTestSpec(spec);
       await reportProgress({
         stage: 'tool',
         round: round + 1,
         note: `正在执行工具：${String(spec).split('\n')[0] || 'HTTP 请求'}`,
       });
-      let r = await executeHttpTest(spec, proxiedFetch);
+      let r;
+      if (parsedSpec && parsedSpec.method === 'MARKDOWN') {
+        // MARKDOWN 模式：直接用 Playwright 浏览器（走代理）抓目标页，不走 r.jina.ai（CNB/GitHub runner 均有浏览器环境）
+        await reportProgress({
+          stage: 'tool',
+          round: round + 1,
+          note: `正在用浏览器（Playwright，走代理）抓取：${parsedSpec.url}`,
+        });
+        try {
+          r = await browserFetchText(parsedSpec.url, { waitMs: 40000, maxWaitChallengeMs: 15000 });
+          log('浏览器抓取(MARKDOWN):', r.status || '', r.url || '');
+        } catch (e) {
+          r = { error: `浏览器抓取失败：${e && e.message ? e.message : e}` };
+        }
+      } else {
+        r = await executeHttpTest(spec, proxiedFetch);
+      }
       // 代理节点抖动导致的网络错误：自动重试一次（url-test 已切换到其他节点后大概率恢复）
-      if (r && r.error) {
+      if (r && r.error && !(parsedSpec && parsedSpec.method === 'MARKDOWN')) {
         await sleep(1500);
         const r2 = await executeHttpTest(spec, proxiedFetch);
         if (r2 && !r2.error) {
