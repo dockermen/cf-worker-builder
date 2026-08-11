@@ -46,17 +46,18 @@ main:
                 echo "!! mihomo 下载失败，跳过代理（将直连）"
               fi
             fi
-            # 2) 下载订阅并生成配置
-            if [ -x /tmp/mihomo ] && curl -sL --max-time 120 "$CNB_PROXY_SUB" -o /tmp/clash.yaml && [ -s /tmp/clash.yaml ]; then
-              echo "订阅已下载（$(wc -c < /tmp/clash.yaml) 字节）"
-              # 订阅可能是 base64 编码的 yaml，尝试解码
-              if ! head -1 /tmp/clash.yaml | grep -qE '^(proxies|mixed-port|port|proxy-groups)'; then
-                base64 -d /tmp/clash.yaml > /tmp/clash.yaml.dec 2>/dev/null && mv /tmp/clash.yaml.dec /tmp/clash.yaml || echo "!! 订阅非 base64/yaml 格式"
+            # 2) 下载订阅并生成 mihomo 配置（标准 yaml 直接用；vless/vmess/hy2 等 URI 订阅自动转换）
+            if [ -x /tmp/mihomo ] && curl -sL --max-time 120 "$CNB_PROXY_SUB" -o /tmp/sub_raw && [ -s /tmp/sub_raw ]; then
+              echo "订阅已下载（$(wc -c < /tmp/sub_raw) 字节）"
+              if head -1 /tmp/sub_raw | grep -qE '^(proxies|mixed-port|port|proxy-groups)'; then
+                cp /tmp/sub_raw /tmp/clash-config.yaml
+              else
+                node agent-runner/sub2clash.js /tmp/sub_raw > /tmp/clash-config.yaml 2>/tmp/sub2clash.log || echo "!! 订阅转换失败（详见 /tmp/sub2clash.log）"
               fi
               # 3) 必须包含 proxies 节点，补 mixed-port 后启动
-              if grep -q '^proxies:' /tmp/clash.yaml; then
-                grep -q '^mixed-port:' /tmp/clash.yaml || sed -i '1i mixed-port: 7890' /tmp/clash.yaml
-                mkdir -p /tmp/clash && cp /tmp/clash.yaml /tmp/clash/config.yaml
+              if grep -q '^proxies:' /tmp/clash-config.yaml; then
+                grep -q '^mixed-port:' /tmp/clash-config.yaml || sed -i '1i mixed-port: 7890' /tmp/clash-config.yaml
+                mkdir -p /tmp/clash && cp /tmp/clash-config.yaml /tmp/clash/config.yaml
                 /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
                 sleep 6
                 # 4) 验证 7890 真的在监听
@@ -75,7 +76,8 @@ main:
                   unset CLASH_PROXY
                 fi
               else
-                echo "!! 订阅配置缺少 proxies 节点，无法使用，跳过代理（将直连）"
+                echo "!! 生成的配置缺少 proxies 节点，无法使用，跳过代理（将直连）"
+                cat /tmp/sub2clash.log 2>/dev/null || true
               fi
             else
               echo "!! 订阅下载失败或为空，跳过代理（将直连）"
