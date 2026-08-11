@@ -35,8 +35,8 @@ const TASK_TOKEN = process.env.TASK_TOKEN || '';
 const BASE_URL = String(process.env.BUILDER_BASE_URL || '').replace(/\/+$/, '');
 const FALLBACK_IP = String(process.env.BUILDER_FALLBACK_IP || '').trim();
 
-const MAX_ROUNDS = 5; // 工具递归轮次上限（与构建器流式路径一致）
 const MAX_LLM_MS = 300000; // 单轮 LLM 超时 5 分钟（比 Workers 内 90 秒宽裕很多）
+// 工具递归轮次上限：由构建器设置（maxToolRounds）下发，默认 8；模型不再调用工具时自动提前结束
 
 // ============ Clash 代理支持（CNB 场景：解决容器访问 Cloudflare 网络问题） ============
 // 构建器交互 + Cloudflare 部署走代理；LLM（国内 API）保持直连。
@@ -294,13 +294,14 @@ async function main() {
   await reportProgress({ stage: 'thinking', round: 1, note: '已连接构建器，开始第 1 轮生成…' });
 
   // 2. Agent 递归循环（LLM → 工具 → 继续，直到无工具调用或到达轮次上限）
-  log('========== 步骤 2/4：Agent 生成循环（最多 5 轮） ==========');
+  const maxRounds = Math.min(30, Math.max(2, Number(task.maxToolRounds) || 8));
+  log(`========== 步骤 2/4：Agent 生成循环（上限 ${maxRounds} 轮，无工具调用自动结束） ==========`);
   const messages = Array.isArray(task.messages) ? task.messages : [];
   const allRoundTexts = [];
   const toolResults = [];
   let code = null;
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
+  for (let round = 0; round < maxRounds; round++) {
     await reportProgress({ stage: 'thinking', round: round + 1, note: `第 ${round + 1} 轮生成中…` });
     const reply = await callLLMWithBeat(task.settings, messages);
     messages.push({ role: 'assistant', content: reply });
@@ -349,8 +350,8 @@ async function main() {
       log('工具结果:', r.status || r.error, r.url || '');
     }
 
-    if (round >= MAX_ROUNDS - 1) {
-      await reportProgress({ stage: 'tool', round: round + 1, note: `已达到工具自动调用轮次上限（${MAX_ROUNDS}）` });
+    if (round >= maxRounds - 1) {
+      await reportProgress({ stage: 'tool', round: round + 1, note: `已达到工具自动调用轮次上限（${maxRounds}）` });
       break;
     }
   }

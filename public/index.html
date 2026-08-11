@@ -502,6 +502,9 @@
     <label>任务回传地址（runner 回调用，默认固定 workers.dev 永久域名，换自定义域不影响）
       <input id="setBuilderBaseUrl" placeholder="https://cf-worker-builder.zhilong.workers.dev" autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
+    <label>最大工具循环轮数（Agent 递归调用 test-http/MARKDOWN 的上限，2-30，默认 8；模型不再调用工具时自动提前结束）
+      <input id="setMaxRounds" type="number" min="2" max="30" placeholder="8" inputmode="numeric" />
+    </label>
 
     <!-- GitHub Actions 配置 -->
     <div id="ghConfigBlock">
@@ -1369,6 +1372,7 @@ function openSettings() {
   const executor = s.executor || (s.hasGh ? 'github' : 'none');
   $('#setExecutor').value = executor;
   $('#setBuilderBaseUrl').value = s.builderBaseUrl || 'https://cf-worker-builder.zhilong.workers.dev';
+  $('#setMaxRounds').value = s.maxToolRounds || 8;
   // GitHub 配置
   $('#setGhRepo').value = s.ghRepo || '';
   $('#setGhToken').value = '';
@@ -1500,6 +1504,7 @@ async function saveSettings() {
     cfAccountId: $('#setAccountId').value.trim(),
     executor: $('#setExecutor').value,
     builderBaseUrl: $('#setBuilderBaseUrl').value.trim(),
+    maxToolRounds: $('#setMaxRounds').value ? parseInt($('#setMaxRounds').value, 10) : 8,
     ghRepo: $('#setGhRepo').value.trim(),
     ghToken: $('#setGhToken').value.trim(),
     ghRef: $('#setGhRef').value.trim() || 'main',

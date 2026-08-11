@@ -121,6 +121,7 @@ async function handleApi(request, url, env, store) {
         // 后台执行器选择：github / cnb / none（仅流式）
         executor: settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none'),
         builderBaseUrl: settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
+        maxToolRounds: Number(settings.maxToolRounds) || 8,
       },
       oauth: publicOAuth(oauth),
       projects,
@@ -154,6 +155,8 @@ async function handleApi(request, url, env, store) {
       executor: ['github', 'cnb', 'none'].includes(body.executor) ? body.executor : (settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none')),
       // 任务回传地址（默认 workers.dev 永久域名）
       builderBaseUrl: String(body.builderBaseUrl || '').trim() || settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
+      // Agent 工具循环轮数上限（2-30，默认 8；模型不再调用工具时自动提前结束）
+      maxToolRounds: Math.min(30, Math.max(2, Number(body.maxToolRounds) || Number(settings.maxToolRounds) || 8)),
     };
 
     if (!next.openaiBaseUrl || !next.openaiKey || !next.openaiModel) {
@@ -199,6 +202,7 @@ async function handleApi(request, url, env, store) {
         hasGh: !!(next.ghRepo && next.ghToken),
         executor: next.executor,
         builderBaseUrl: next.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
+        maxToolRounds: Number(next.maxToolRounds) || 8,
       },
     });
   }
@@ -633,6 +637,7 @@ async function asyncChatAction(request, store, id) {
       openaiModel: settings.openaiModel,
       openaiApiType: settings.openaiApiType || 'chat',
     },
+    maxToolRounds: Number(settings.maxToolRounds) || 8,
     cf,
     ghRunUrl: '',
     cnbSn: '',
@@ -722,6 +727,7 @@ async function taskFetchAction(store, taskId, url) {
     autoDeploy: task.autoDeploy,
     messages: task.messages,
     settings: task.settings,
+    maxToolRounds: Number(task.maxToolRounds) || 8,
     cf: task.cf,
   });
 }
@@ -950,7 +956,7 @@ async function streamChatAction(request, store, id) {
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const MAX_TOOL_ROUNDS = 4;
+  const MAX_TOOL_ROUNDS = Math.min(30, Math.max(2, Number(settings.maxToolRounds) || 8));
   const allToolResults = [];
 
   const stream = new ReadableStream({
