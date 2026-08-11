@@ -315,6 +315,17 @@ async function main() {
         note: `正在执行工具：${String(spec).split('\n')[0] || 'HTTP 请求'}`,
       });
       let r = await executeHttpTest(spec, proxiedFetch);
+      // 代理节点抖动导致的网络错误：自动重试一次（url-test 已切换到其他节点后大概率恢复）
+      if (r && r.error) {
+        await sleep(1500);
+        const r2 = await executeHttpTest(spec, proxiedFetch);
+        if (r2 && !r2.error) {
+          log('工具请求首次失败，重试成功:', r2.status || '', r2.url || '');
+          r = r2;
+        } else {
+          r = r2 || r;
+        }
+      }
       // Cloudflare 人机验证挑战页：普通请求被拦，自动用 Playwright 无头浏览器重抓真实内容
       if (r && !r.error && r.challenge && r.url) {
         await reportProgress({ stage: 'tool', round: round + 1, note: `目标站有人机验证，正在用浏览器（Playwright）抓取：${r.url}` });
