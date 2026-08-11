@@ -14,7 +14,7 @@
 | 2. 以项目为单位创建，自动发布并给地址 | 项目 CRUD + 对话生成代码 + 自动部署到 workers.dev 并返回 URL，后续可在对话框继续提需求迭代修改 |
 | 3. 内置 Cloudflare 登录态 | 支持「在线登录」（设备码 OAuth，类似 `wrangler login --device`，零配置浏览器授权）与手动 API Token；令牌持久化在 KV 且**到期自动刷新**，无需每次登录 |
 | 4. 访问密码保护 | 进入构建器需输入密码（默认 `123456`），登录签发 7 天有效 token，后台可随时修改密码 |
-| 5. GitHub Actions 后台长任务对话 | 可选接入 [GitHub Actions](https://docs.github.com/zh/actions)：对话提交到 `workflow_dispatch` 后台执行（单任务最长 6 小时，无 Workers 长连接超时限制），LLM 生成 → 工具调用 → 部署 → 冒烟测试全程自动，可切换页面，完成后自动刷新 |
+| 5. 后台长任务对话（双执行器） | 设置页可选 **GitHub Actions**（`workflow_dispatch`，单任务最长 6 小时）或 **CNB 云原生构建**（可选 **Clash 代理订阅**，解决大陆容器访问 Cloudflare 网络问题）作为后台执行器，无 Workers 长连接超时限制，LLM 生成 → 工具调用 → 部署 → 冒烟测试全程自动，可切换页面，完成后自动刷新 |
 | 5. 项目与远程 Worker 联动 | 构建器创建的项目删除时**同步删除远程 Worker**；支持**关联已有 Worker 项目**（拉取代码、对话修改、覆盖部署，删除项目不影响远程） |
 
 其他细节：
@@ -27,7 +27,8 @@
 - 🔧 Agent 内置 HTTP 测试工具（`test-http`，等效 curl）：生成代码并部署后可直接请求接口验证，结果回填对话；部署成功自动冒烟测试（404 中性提示）；浏览器级验证可让 Agent 生成 Playwright 脚本本机运行；
 - 🕘 每个项目支持版本控制：每次部署自动存档，⭐ 标记的版本永久保留（不受上限），未标记版本最多保留 20 个；可查看代码、恢复、恢复并部署；
 - 🔁 递归对话：同一轮对话内 Agent 可自动多轮调用工具（curl 网页源码/开源代码、MARKDOWN 获取网页资料），基于结果继续生成与测试，无需用户反复发消息；
-- 🚀 后台长任务（方案 B）：配置 GitHub Actions 后对话改为「提交 → GitHub Actions 后台执行 → 轮询进度 → 自动写回」，彻底解决长对话/长响应在 Workers 上超时中断的问题；未配置时自动回退内置流式对话；
+- 🚀 后台长任务（方案 B）：设置页选择 GitHub Actions 或 CNB 作为执行器，对话改为「提交 → 后台执行 → 轮询进度 → 自动写回」，彻底解决长对话/长响应在 Workers 上超时中断的问题；选择「关闭」时自动回退内置流式对话；
+- 🛰️ CNB + Clash 代理订阅：CNB 容器（大陆）访问 Cloudflare 不稳定时，可在设置里填 Clash 订阅，流水线自动安装 mihomo 启动本地代理（`http://127.0.0.1:7890`），构建器回调与 Cloudflare 部署走代理出口，LLM 保持直连；
 - 🎨 深色现代化界面，无需任何前端构建步骤。
 
 ## 🧱 技术架构
@@ -124,7 +125,7 @@ npm run deploy
 7. **关联已有 Worker**：新建项目对话框切到「关联已有 Worker」，输入 Cloudflare 中的脚本名，构建器自动拉取代码；之后可在对话中修改并覆盖部署。该项目显示「外部 Worker」徽章，删除时只移除本地记录、不影响远程。
 8. **删除联动**：构建器自己创建的项目删除时会同时删除 Cloudflare 上对应的 Worker；关联的外部 Worker 项目不会被删除。
 9. **访问密码**：进入页面需输入密码（默认 `123456`），登录后可在「设置 → ③ 访问密码」中修改。
-10. **GitHub Actions 后台长任务（可选，推荐）**：在「设置 → ④ 后台执行器 · GitHub Actions」填写仓库路径与 PAT 后，对话自动改为提交到 GitHub Actions 后台执行（可切换页面，完成后自动刷新，不再有 Workers 长连接超时/中断问题）。首次使用需先把本仓库推送到 GitHub（含 `.github/workflows/builder-task.yml` 与 `agent-runner/`），详见下文「🚀 GitHub Actions 后台长任务使用指南」。
+10. **后台长任务（可选，推荐）**：在「设置 → ④ 后台执行器」选择执行器（GitHub Actions / CNB / 关闭）并填写对应配置。GitHub 需仓库路径 + PAT（含 `Actions` 写权限）；CNB 需仓库路径 + Token（`repo-cnb-trigger:rw`）+ 可选 Clash 代理订阅。选择后对话自动提交到后台执行（可切换页面，完成后自动刷新），详见下文「🚀 后台长任务使用指南」。
 
 ## 🔌 API 一览
 
@@ -228,6 +229,10 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
 
 ## 📝 更新记录
 
+- **2026-08-11**：v2.3.0 后台执行器双选（GitHub / CNB）+ CNB Clash 代理订阅
+  - 设置页「④ 后台执行器」下拉选择：GitHub Actions / CNB 云原生构建 / 关闭（仅流式）
+  - CNB 新增「Clash 代理订阅」：流水线自动安装 mihomo 启动本地代理，构建器回调与 Cloudflare 部署走代理（LLM 直连），解决 CNB 大陆容器访问 Cloudflare 网络问题
+  - runner 支持 `CLASH_PROXY`（undici ProxyAgent）：构建器/CF 请求走代理，LLM 直连；`deploy.js`/`browser.js` 支持代理 fetch / Playwright 代理
 - **2026-08-11**：v2.2.0 构建器域名切换为 worker.logg.click
   - 自定义域由 `builder.logg.asia` 统一切换为 `worker.logg.click`（wrangler.toml routes、GitHub workflow 回调地址、runner 注释同步更新，旧自定义域已移除）
 - **2026-08-10**：v2.1.0 方案 B 执行器切换为 GitHub Actions（CNB 大陆容器访问 Cloudflare 不稳定，弃用）
