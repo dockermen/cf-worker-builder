@@ -241,7 +241,12 @@ linesOut.push('proxies:');
 for (const n of proxies) {
   linesOut.push(`  - name: "${n.name}"`);
   linesOut.push(`    type: ${n.type}`);
-  linesOut.push(`    server: ${n.server}`);
+  // IPv6 地址必须加引号（含冒号，否则 YAML 解析报错）
+  let serverVal = n.server;
+  if (serverVal.includes(':')) {
+    serverVal = serverVal.startsWith('[') ? `"${serverVal}"` : `"[${serverVal}]"`;
+  }
+  linesOut.push(`    server: ${serverVal}`);
   linesOut.push(`    port: ${n.port}`);
   for (const [k, v] of Object.entries(n)) {
     if (['name', 'type', 'server', 'port'].includes(k)) continue;
