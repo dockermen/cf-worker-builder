@@ -8,6 +8,10 @@
  *    Token 持久化在 KV 且自动刷新，无需每次登录
  */
 
+// 任务回传地址默认值：固定使用 workers.dev 永久域名（不随自定义域更换而变化；
+// GitHub/CNB runner 均在海外或走代理，可正常访问 workers.dev）。
+export const DEFAULT_BUILDER_BASE_URL = 'https://cf-worker-builder.zhilong.workers.dev';
+
 import { json, slugify, extractCode, maskKey, DEFAULT_CODE, pushVersion } from './util.js';
 import { makeStore } from './store.js';
 import { callChatCompletion, streamChatCompletion, SYSTEM_PROMPT } from './agent.js';
@@ -116,6 +120,7 @@ async function handleApi(request, url, env, store) {
         hasGh: !!(settings.ghRepo && settings.ghToken),
         // 后台执行器选择：github / cnb / none（仅流式）
         executor: settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none'),
+        builderBaseUrl: settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
       },
       oauth: publicOAuth(oauth),
       projects,
@@ -147,6 +152,8 @@ async function handleApi(request, url, env, store) {
       ghRef: String(body.ghRef || '').trim() || settings.ghRef || 'main',
       // 后台执行器选择：github / cnb / none
       executor: ['github', 'cnb', 'none'].includes(body.executor) ? body.executor : (settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none')),
+      // 任务回传地址（默认 workers.dev 永久域名）
+      builderBaseUrl: String(body.builderBaseUrl || '').trim() || settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
     };
 
     if (!next.openaiBaseUrl || !next.openaiKey || !next.openaiModel) {
@@ -191,6 +198,7 @@ async function handleApi(request, url, env, store) {
         ghTokenMasked: maskKey(next.ghToken),
         hasGh: !!(next.ghRepo && next.ghToken),
         executor: next.executor,
+        builderBaseUrl: next.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
       },
     });
   }
@@ -502,7 +510,7 @@ async function handleApi(request, url, env, store) {
       return await streamChatAction(request, store, id);
     }
     if (action === 'chat/async' && method === 'POST') {
-      return await asyncChatAction(request, store, id, `${url.protocol}//${url.host}`);
+      return await asyncChatAction(request, store, id);
     }
     if (action === 'deploy' && method === 'POST') {
       return await deployAction(store, id);
@@ -551,7 +559,7 @@ async function handleApi(request, url, env, store) {
  * - CNB runner（agent-runner/run.js，无时长限制）执行 LLM 循环/工具/部署/冒烟，结果回调写回项目
  * - 前端轮询 chat-status 获取实时进度（stage/note），任务完成时状态清除并刷新项目
  */
-async function asyncChatAction(request, store, id, baseUrl) {
+async function asyncChatAction(request, store, id) {
   const project = await store.getProject(id);
   if (!project) return json({ error: '项目不存在' }, 404);
 
@@ -560,6 +568,8 @@ async function asyncChatAction(request, store, id, baseUrl) {
   if (!message) return json({ error: '消息不能为空' }, 400);
 
   const settings = await store.getSettings();
+  // 任务回传地址：固定使用配置值（默认 workers.dev 永久域名），不随当前自定义域变化
+  const baseUrl = String(settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL).replace(/\/+$/, '');
   if (!settings.openaiBaseUrl || !settings.openaiKey || !settings.openaiModel) {
     return json({ error: '请先在「设置」中配置 OpenAI Base URL、Key 和模型' }, 400);
   }

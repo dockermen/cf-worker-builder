@@ -2,7 +2,7 @@
 #
 # 由构建器（Worker 在线构建器）通过 GitHub API 触发：
 #   POST https://api.github.com/repos/{owner}/{repo}/actions/workflows/builder-task.yml/dispatches
-#   {"ref": "main", "inputs": {"task_id": "...", "task_token": "...", "builder_base_url": "https://worker.logg.click"}}
+#   {"ref": "main", "inputs": {"task_id": "...", "task_token": "...", "builder_base_url": "https://cf-worker-builder.zhilong.workers.dev"}}
 #
 # runner（agent-runner/run.js）在 ubuntu 容器中执行完整的
 # 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」Agent 循环（最长 6 小时，无 Workers 长连接超时限制），
@@ -23,7 +23,7 @@ on:
       builder_base_url:
         description: 构建器地址（用于拉取任务/上报进度/回传结果）
         required: true
-        default: https://worker.logg.click
+        default: https://cf-worker-builder.zhilong.workers.dev
 
 jobs:
   run-builder-agent:

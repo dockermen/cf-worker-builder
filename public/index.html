@@ -499,6 +499,9 @@
         <option value="none">关闭后台执行器（仅内置流式对话）</option>
       </select>
     </label>
+    <label>任务回传地址（runner 回调用，默认固定 workers.dev 永久域名，换自定义域不影响）
+      <input id="setBuilderBaseUrl" placeholder="https://cf-worker-builder.zhilong.workers.dev" autocapitalize="off" autocorrect="off" spellcheck="false" />
+    </label>
 
     <!-- GitHub Actions 配置 -->
     <div id="ghConfigBlock">
@@ -1365,6 +1368,7 @@ function openSettings() {
   // 后台执行器
   const executor = s.executor || (s.hasGh ? 'github' : 'none');
   $('#setExecutor').value = executor;
+  $('#setBuilderBaseUrl').value = s.builderBaseUrl || 'https://cf-worker-builder.zhilong.workers.dev';
   // GitHub 配置
   $('#setGhRepo').value = s.ghRepo || '';
   $('#setGhToken').value = '';
@@ -1495,6 +1499,7 @@ async function saveSettings() {
     cfToken: $('#setCfToken').value.trim(),
     cfAccountId: $('#setAccountId').value.trim(),
     executor: $('#setExecutor').value,
+    builderBaseUrl: $('#setBuilderBaseUrl').value.trim(),
     ghRepo: $('#setGhRepo').value.trim(),
     ghToken: $('#setGhToken').value.trim(),
     ghRef: $('#setGhRef').value.trim() || 'main',

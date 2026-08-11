@@ -11,7 +11,7 @@
  * 环境变量（由构建器通过 CNB StartBuild 的 env 传入）：
  *   TASK_ID            任务 ID
  *   TASK_TOKEN         一次性任务令牌（用于向构建器拉取任务/上报进度/回传结果）
- *   BUILDER_BASE_URL   构建器地址，如 https://worker.logg.click
+ *   BUILDER_BASE_URL   构建器地址，如 https://cf-worker-builder.zhilong.workers.dev（固定 workers.dev 域名）
  *   BUILDER_FALLBACK_IP 可选：构建器域名解析失败/被污染时，用该 IP 直连（SNI 仍为域名）
  *   CLASH_PROXY         可选：Clash/HTTP 代理地址（如 http://127.0.0.1:7890）。
  *                       启用后「构建器交互 + Cloudflare 部署」走代理（解决 CNB 容器访问 Cloudflare 网络问题），
