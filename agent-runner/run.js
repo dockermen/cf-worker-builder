@@ -49,17 +49,25 @@ if (CLASH_PROXY) {
     const { ProxyAgent } = await import('undici');
     proxyAgent = new ProxyAgent(CLASH_PROXY);
     proxiedFetch = (url, opts = {}) => fetch(url, { ...opts, dispatcher: proxyAgent });
-    // 代理健康检查：走代理请求构建器，失败则降级直连，避免「假代理」导致全部 ECONNREFUSED
-    try {
-      const probe = await proxiedFetch(`${BASE_URL}/api/auth/check`, { signal: AbortSignal.timeout(12000) });
-      if (probe.status < 500) {
-        log(`已启用 Clash 代理：${CLASH_PROXY}（构建器/Cloudflare 请求走代理，LLM 直连）`);
-      } else {
-        throw new Error(`probe HTTP ${probe.status}`);
+    // 代理健康检查：走代理请求构建器。url-test 组首次测速可能需数秒，重试 4 次（间隔 3 秒）再降级
+    let proxyOk = false;
+    for (let i = 0; i < 4 && !proxyOk; i++) {
+      try {
+        const probe = await proxiedFetch(`${BASE_URL}/api/auth/check`, { signal: AbortSignal.timeout(12000) });
+        if (probe.status < 500) {
+          proxyOk = true;
+        } else {
+          throw new Error(`probe HTTP ${probe.status}`);
+        }
+      } catch (pe) {
+        if (i < 3) await sleep(3000);
       }
-    } catch (pe) {
+    }
+    if (proxyOk) {
+      log(`已启用 Clash 代理：${CLASH_PROXY}（构建器/Cloudflare 请求走代理，LLM 直连）`);
+    } else {
       proxiedFetch = fetch;
-      log(`⚠️ Clash 代理不可用（${pe && pe.message ? pe.message : pe}），已降级为直连`);
+      log(`⚠️ Clash 代理健康检查失败（重试 4 次后仍不可用），已降级为直连`);
     }
   } catch (e) {
     proxiedFetch = fetch;

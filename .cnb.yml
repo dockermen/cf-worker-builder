@@ -61,27 +61,29 @@ main:
                 # log-level 临时调为 info：让监听日志可见（默认 warning 会过滤掉 Mixed server 启动日志）
                 grep -q '^log-level:' /tmp/clash/config.yaml && sed -i 's/^log-level:.*/log-level: info/' /tmp/clash/config.yaml || sed -i '1i log-level: info' /tmp/clash/config.yaml
                 /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
-                sleep 8
-                # 4) 验证 mihomo 已在 7890 监听（仅查监听，不要求节点立刻连通；
-                #    节点可用性交给 url-test 组自动选择 + runner 健康检查兜底降级）
-                #    注意：mihomo 默认双栈监听 ::，端口记录在 /proc/net/tcp6，两个文件都要查
+                sleep 10
+                # 4) 验证 mihomo 已在 7890 监听。
+                #    注意：CNB 容器的 /proc/net/tcp 可能查不到 socket 记录（此前实测日志显示
+                #    Mixed proxy listening 成功但 /proc 无记录），因此以 mihomo 自身日志为准 +
+                #    Node TCP 连接测试（不依赖 /proc、nc、ss）。
                 PORT_OK=0
-                if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 7890 2>/dev/null; then
-                  PORT_OK=1
-                elif grep -qiE ':(1ECA|1eca)[[:space:]]' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
-                  PORT_OK=1
-                elif command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':7890'; then
+                # 方式1（最可靠）：mihomo 日志明确打印监听成功
+                grep -q 'proxy listening at: 127.0.0.1:7890' /tmp/clash.log 2>/dev/null && PORT_OK=1
+                # 方式2：Node TCP 握手测试（只测连接，不要求节点连通）
+                if [ "$PORT_OK" != "1" ]; then
+                  node -e "const s=require('net').connect(7890,'127.0.0.1',()=>{process.exit(0)});s.on('error',()=>process.exit(1))" 2>/dev/null && PORT_OK=1
+                fi
+                # 方式3：nc / ss 兜底
+                if [ "$PORT_OK" != "1" ] && command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 7890 2>/dev/null; then
                   PORT_OK=1
                 fi
                 if [ "$PORT_OK" = "1" ]; then
                   export CLASH_PROXY=http://127.0.0.1:7890
                   echo "== Clash 代理已启动（mihomo 监听 7890）：$CLASH_PROXY =="
-                  grep -iE 'mixed.*(server|listening)|listening.*7890' /tmp/clash.log 2>/dev/null | tail -2 || true
+                  grep -i 'proxy listening at' /tmp/clash.log 2>/dev/null | tail -1 || true
                 else
                   echo "!! Clash 代理启动失败（7890 未监听），降级直连。mihomo 日志："
                   tail -30 /tmp/clash.log 2>/dev/null || true
-                  echo "--- tcp/tcp6 中 7890(1ECA) 记录 ---"
-                  grep -i '1ECA' /proc/net/tcp /proc/net/tcp6 2>/dev/null || echo "(无)"
                   unset CLASH_PROXY
                 fi
               else
