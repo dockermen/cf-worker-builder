@@ -35,7 +35,7 @@ main:
             set -e
             echo "---- [$(date '+%H:%M:%S')] 步骤 1/3：准备环境 ----"
             echo "Node: $(node -v) | npm: $(npm -v) | 工作目录: $(pwd)"
-            echo "任务参数: TASK_ID=${TASK_ID:0:8}... BUILDER_BASE_URL=${BUILDER_BASE_URL:-<未设置>}"
+            echo "任务参数: TASK_ID=$TASK_ID BUILDER_BASE_URL=${BUILDER_BASE_URL:-<未设置>}"
             echo ">>> [1/3] 安装系统工具（curl / gzip / ca-certificates）..."
             apt-get update -qq >/dev/null 2>&1 || true
             apt-get install -y -qq curl gzip ca-certificates >/dev/null 2>&1 || true
@@ -134,7 +134,7 @@ main:
                 echo "代理就绪: CLASH_PROXY=$CLASH_PROXY"
               fi
             fi
-            echo "运行环境: CLASH_PROXY=${CLASH_PROXY:-<未设置，直连>} | TASK_ID=${TASK_ID:0:8}..."
+            echo "运行环境: CLASH_PROXY=${CLASH_PROXY:-<未设置，直连>} | TASK_ID=$TASK_ID"
             echo ">>> 启动 runner（agent-runner/run.js）..."
             node agent-runner/run.js
             echo "---- 步骤 3/3 完成 ----"
