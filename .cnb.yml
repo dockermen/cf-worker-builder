@@ -60,16 +60,19 @@ main:
                 mkdir -p /tmp/clash && cp /tmp/clash-config.yaml /tmp/clash/config.yaml
                 /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
                 sleep 6
-                # 4) 验证 7890 真的在监听
+                # 4) 验证 mihomo 已在 7890 监听（仅查监听，不要求节点立刻连通；
+                #    节点可用性交给 url-test 组自动选择 + runner 健康检查兜底降级）
                 PORT_OK=0
-                if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':7890'; then
+                if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 7890 2>/dev/null; then
                   PORT_OK=1
-                elif curl -s --max-time 10 -x http://127.0.0.1:7890 -o /dev/null -w '%{http_code}' https://www.google.com 2>/dev/null | grep -qE '^[2345][0-9][0-9]$'; then
+                elif grep -qiE ':(CA1E|ca1e) ' /proc/net/tcp 2>/dev/null; then
+                  PORT_OK=1
+                elif command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':7890'; then
                   PORT_OK=1
                 fi
                 if [ "$PORT_OK" = "1" ]; then
                   export CLASH_PROXY=http://127.0.0.1:7890
-                  echo "== Clash 代理已启动并验证可用: $CLASH_PROXY =="
+                  echo "== Clash 代理已启动（mihomo 监听 7890）：$CLASH_PROXY =="
                 else
                   echo "!! Clash 代理启动失败（7890 未监听），降级直连。mihomo 日志："
                   tail -20 /tmp/clash.log 2>/dev/null || true

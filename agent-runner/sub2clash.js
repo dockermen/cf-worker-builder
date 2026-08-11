@@ -258,7 +258,10 @@ for (const n of proxies) {
 }
 linesOut.push('proxy-groups:');
 linesOut.push(`  - name: "PROXY"`);
-linesOut.push(`    type: select`);
+linesOut.push(`    type: url-test`);
+linesOut.push('    url: http://www.gstatic.com/generate_204');
+linesOut.push('    interval: 60');
+linesOut.push('    tolerance: 50');
 linesOut.push('    proxies:');
 for (const nm of names) linesOut.push(`      - "${nm}"`);
 linesOut.push('rules:');
