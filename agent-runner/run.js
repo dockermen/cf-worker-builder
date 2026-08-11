@@ -13,6 +13,9 @@
  *   TASK_TOKEN         一次性任务令牌（用于向构建器拉取任务/上报进度/回传结果）
  *   BUILDER_BASE_URL   构建器地址，如 https://worker.logg.click
  *   BUILDER_FALLBACK_IP 可选：构建器域名解析失败/被污染时，用该 IP 直连（SNI 仍为域名）
+ *   CLASH_PROXY         可选：Clash/HTTP 代理地址（如 http://127.0.0.1:7890）。
+ *                       启用后「构建器交互 + Cloudflare 部署」走代理（解决 CNB 容器访问 Cloudflare 网络问题），
+ *                       LLM 调用保持直连（DeepSeek 等国内 API 无需代理）。
  *
  * LLM Key / Cloudflare Token 不会出现在 CNB 环境变量或构建日志中，
  * 而是通过一次性 token 从构建器拉取，任务结束后自动销毁。
@@ -34,6 +37,26 @@ const FALLBACK_IP = String(process.env.BUILDER_FALLBACK_IP || '').trim();
 
 const MAX_ROUNDS = 5; // 工具递归轮次上限（与构建器流式路径一致）
 const MAX_LLM_MS = 300000; // 单轮 LLM 超时 5 分钟（比 Workers 内 90 秒宽裕很多）
+
+// ============ Clash 代理支持（CNB 场景：解决容器访问 Cloudflare 网络问题） ============
+// 构建器交互 + Cloudflare 部署走代理；LLM（国内 API）保持直连。
+const CLASH_PROXY = String(process.env.CLASH_PROXY || process.env.HTTP_PROXY || process.env.http_proxy || '').trim();
+
+let proxiedFetch = null; // 走代理的 fetch（未启用代理时 = 全局 fetch）
+let proxyAgent = null;
+if (CLASH_PROXY) {
+  try {
+    const { ProxyAgent } = await import('undici');
+    proxyAgent = new ProxyAgent(CLASH_PROXY);
+    proxiedFetch = (url, opts = {}) => fetch(url, { ...opts, dispatcher: proxyAgent });
+    log(`已启用 Clash 代理：${CLASH_PROXY}（构建器/Cloudflare 请求走代理，LLM 直连）`);
+  } catch (e) {
+    proxiedFetch = fetch;
+    log(`⚠️ 已设置 CLASH_PROXY 但无法加载 undici（需 npm i undici），代理未生效：${e.message}`);
+  }
+} else {
+  proxiedFetch = fetch;
+}
 
 function log(...args) {
   console.log(`[runner ${TASK_ID}]`, ...args);
@@ -104,7 +127,7 @@ async function fetchTask() {
       } catch (de) {
         log(`⚠️ DNS 解析失败：${describeFetchError(de)}`);
       }
-      const res = await fetch(url);
+      const res = await proxiedFetch(url);
       if (!res.ok) {
         throw new Error(`拉取任务失败（HTTP ${res.status}）：${(await res.text().catch(() => '')).slice(0, 300)}`);
       }
@@ -135,7 +158,7 @@ async function postWithRetry(path, payload, tries = 3) {
   for (let i = 0; i < tries; i++) {
     try {
       const url = `${BASE_URL}${path}`;
-      const res = await fetch(url, {
+      const res = await proxiedFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: TASK_TOKEN, ...payload }),
@@ -322,6 +345,8 @@ async function main() {
         code,
         // 本地/联调可用 CF_API_BASE 指向 mock 服务；生产默认 Cloudflare 官方 API
         apiBase: process.env.CF_API_BASE || undefined,
+        // Clash 代理启用时，Cloudflare 部署请求也走代理
+        fetchImpl: proxiedFetch,
       });
       deployed = true;
       url = `https://${task.workerName}.${task.cf.subdomain}.workers.dev`;

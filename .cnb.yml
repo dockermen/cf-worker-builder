@@ -4,14 +4,18 @@
 #   POST https://api.cnb.cool/{repo}/-/build/start
 #   {"event": "api_trigger_builder", "branch": "main", "env": {"TASK_ID": "...", "TASK_TOKEN": "...", "BUILDER_BASE_URL": "..."}}
 #
-# 重要：api_trigger 事件必须配置在【分支块】下（main: / $:），不能放在顶层，
-# 否则 CNB 会报「分支 main 和 $ 下无 api_trigger_builder 事件配置」。
+# 重要：api_trigger 事件必须配置在【分支块】下（main: / $:），不能放在顶层。
 # runner（agent-runner/run.js）在 node:20 容器中执行完整的
 # 「LLM 生成 → 工具调用 → 部署 → 冒烟测试」Agent 循环，无 Workers 长连接超时限制，
 # 结果通过回调写回构建器。
 #
-# 注意：仓库需在 cnb.cool「仓库设置 → 云原生构建」中勾选「允许自动触发」，
-# 否则 OPENAPI 触发不会真正执行流水线。
+# 可选环境变量：
+#   CNB_PROXY_SUB  Clash 代理订阅地址（构建器设置里配置）。提供后本流水线会：
+#                  ① 安装 mihomo（Clash Meta 内核）；② 下载订阅生成配置（自动补 mixed-port: 7890）；
+#                  ③ 启动本地代理并设置 CLASH_PROXY=http://127.0.0.1:7890。
+#                  用于解决 CNB 容器（大陆）访问 Cloudflare / workers.dev 网络不通的问题。
+#
+# 注意：仓库需在 cnb.cool「仓库设置 → 云原生构建」中勾选「允许自动触发」。
 
 main:
   api_trigger_builder:
@@ -20,4 +24,36 @@ main:
         volumes:
           - /root/.npm:copy-on-write
       stages:
-        - node agent-runner/run.js
+        - |
+          set -e
+          echo "== 准备环境 =="
+          apt-get update -qq >/dev/null 2>&1 || true
+          apt-get install -y -qq curl gzip ca-certificates >/dev/null 2>&1 || true
+          # undici：Clash 代理下 Node fetch 需要 ProxyAgent
+          npm i undici --no-save --no-package-lock --silent >/dev/null 2>&1 || true
+
+          # ===== Clash 代理（可选，CNB_PROXY_SUB 由构建器设置传入） =====
+          if [ -n "$CNB_PROXY_SUB" ]; then
+            echo "== 检测到代理订阅，启动 Clash（mihomo） =="
+            curl -sL --max-time 90 "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.10/mihomo-linux-amd64-v1.18.10.gz" -o /tmp/mihomo.gz && \
+              gunzip -f /tmp/mihomo.gz && chmod +x /tmp/mihomo && echo "mihomo 已安装"
+            curl -sL --max-time 90 "$CNB_PROXY_SUB" -o /tmp/clash.yaml && echo "订阅已下载"
+            if [ -s /tmp/clash.yaml ]; then
+              # 订阅可能是 base64 编码的 yaml，尝试解码
+              if ! head -1 /tmp/clash.yaml | grep -qE '^(proxies|mixed-port|port|proxy-groups|proxies:)'; then
+                base64 -d /tmp/clash.yaml > /tmp/clash.yaml.dec 2>/dev/null && mv /tmp/clash.yaml.dec /tmp/clash.yaml || true
+              fi
+              # 确保 mixed-port 监听 7890
+              grep -q '^mixed-port:' /tmp/clash.yaml || sed -i '1i mixed-port: 7890' /tmp/clash.yaml
+              mkdir -p /tmp/clash && cp /tmp/clash.yaml /tmp/clash/config.yaml
+              /tmp/mihomo -d /tmp/clash >/tmp/clash.log 2>&1 &
+              sleep 6
+              export CLASH_PROXY=http://127.0.0.1:7890
+              echo "== Clash 代理已启动: $CLASH_PROXY（日志见 /tmp/clash.log） =="
+            else
+              echo "!! 订阅下载失败或为空，跳过代理（将直连）"
+            fi
+          fi
+
+          echo "== 执行构建器 Agent 任务 =="
+          node agent-runner/run.js

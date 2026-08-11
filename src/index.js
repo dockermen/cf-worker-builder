@@ -104,14 +104,18 @@ async function handleApi(request, url, env, store) {
         cnbRepo: settings.cnbRepo || '',
         cnbBranch: settings.cnbBranch || 'main',
         cnbFallbackIp: settings.cnbFallbackIp || '',
+        cnbProxySub: settings.cnbProxySub || '',
+        cnbProxySubMasked: maskKey(settings.cnbProxySub),
         cnbTokenMasked: maskKey(settings.cnbToken),
         hasCnb: !!(settings.cnbRepo && settings.cnbToken),
-        // GitHub Actions（推荐的后台长任务执行器）
+        // GitHub Actions
         ghEnabled: settings.ghEnabled !== false,
         ghRepo: settings.ghRepo || '',
         ghRef: settings.ghRef || 'main',
         ghTokenMasked: maskKey(settings.ghToken),
         hasGh: !!(settings.ghRepo && settings.ghToken),
+        // 后台执行器选择：github / cnb / none（仅流式）
+        executor: settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none'),
       },
       oauth: publicOAuth(oauth),
       projects,
@@ -135,11 +139,14 @@ async function handleApi(request, url, env, store) {
       cnbToken: String(body.cnbToken || '').trim() || settings.cnbToken || '',
       cnbBranch: String(body.cnbBranch || '').trim() || settings.cnbBranch || 'main',
       cnbFallbackIp: String(body.cnbFallbackIp || '').trim() || settings.cnbFallbackIp || '',
-      // GitHub Actions（推荐）
+      cnbProxySub: String(body.cnbProxySub || '').trim() || settings.cnbProxySub || '',
+      // GitHub Actions
       ghEnabled: typeof body.ghEnabled === 'boolean' ? body.ghEnabled : settings.ghEnabled !== false,
       ghRepo: String(body.ghRepo || '').trim() || settings.ghRepo || '',
       ghToken: String(body.ghToken || '').trim() || settings.ghToken || '',
       ghRef: String(body.ghRef || '').trim() || settings.ghRef || 'main',
+      // 后台执行器选择：github / cnb / none
+      executor: ['github', 'cnb', 'none'].includes(body.executor) ? body.executor : (settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none')),
     };
 
     if (!next.openaiBaseUrl || !next.openaiKey || !next.openaiModel) {
@@ -174,6 +181,8 @@ async function handleApi(request, url, env, store) {
         cnbRepo: next.cnbRepo,
         cnbBranch: next.cnbBranch,
         cnbFallbackIp: next.cnbFallbackIp,
+        cnbProxySub: next.cnbProxySub,
+        cnbProxySubMasked: maskKey(next.cnbProxySub),
         cnbTokenMasked: maskKey(next.cnbToken),
         hasCnb: !!(next.cnbRepo && next.cnbToken),
         ghEnabled: next.ghEnabled !== false,
@@ -181,6 +190,7 @@ async function handleApi(request, url, env, store) {
         ghRef: next.ghRef,
         ghTokenMasked: maskKey(next.ghToken),
         hasGh: !!(next.ghRepo && next.ghToken),
+        executor: next.executor,
       },
     });
   }
@@ -547,11 +557,16 @@ async function asyncChatAction(request, store, id, baseUrl) {
   if (!settings.openaiBaseUrl || !settings.openaiKey || !settings.openaiModel) {
     return json({ error: '请先在「设置」中配置 OpenAI Base URL、Key 和模型' }, 400);
   }
-  if (!settings.ghRepo || !settings.ghToken) {
-    return json({ error: '尚未配置 GitHub Actions（设置 → ④ 后台执行器：仓库路径 + PAT），无法使用后台长任务对话；或切换为普通流式对话' }, 400);
+  // 后台执行器：github / cnb / none
+  const executor = settings.executor === 'cnb' ? 'cnb' : settings.executor === 'github' ? 'github' : 'none';
+  if (executor === 'none') {
+    return json({ error: '尚未选择后台执行器（设置 → ④ 后台执行器：GitHub Actions / CNB），无法使用后台长任务对话；或直接使用普通流式对话' }, 400);
   }
-  if (settings.ghEnabled === false) {
-    return json({ error: '已在设置中关闭 GitHub Actions 后台长任务，请改用普通流式对话（或在设置中重新启用）' }, 400);
+  if (executor === 'github' && (!settings.ghRepo || !settings.ghToken)) {
+    return json({ error: '已选择 GitHub Actions，但未配置仓库路径或 PAT（设置 → ④ 后台执行器）' }, 400);
+  }
+  if (executor === 'cnb' && (!settings.cnbRepo || !settings.cnbToken)) {
+    return json({ error: '已选择 CNB，但未配置仓库路径或 Token（设置 → ④ 后台执行器）' }, 400);
   }
 
   // 用户消息立即持久化（重试去重；即使后续失败，切换页面后记录也不丢失）
@@ -564,7 +579,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
   await store.saveProject(project);
 
   await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
-  await store.setChatStatus(id, { status: 'running', executor: 'github', taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
+  await store.setChatStatus(id, { status: 'running', executor, taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
 
   // 解析 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
   let cf;
@@ -589,7 +604,7 @@ async function asyncChatAction(request, store, id, baseUrl) {
     id: taskId,
     projectId: id,
     token: taskToken,
-    executor: 'github',
+    executor,
     createdAt: Date.now(),
     autoDeploy: body.autoDeploy !== false,
     userMessage: message,
@@ -604,36 +619,68 @@ async function asyncChatAction(request, store, id, baseUrl) {
     },
     cf,
     ghRunUrl: '',
+    cnbSn: '',
+    buildLogUrl: '',
     status: 'queued',
   };
   await store.saveTask(task);
 
-  // 触发 GitHub Actions workflow_dispatch（runner 在 .github/workflows/builder-task.yml）
-  try {
-    await triggerGithubWorkflow({
-      repo: settings.ghRepo,
-      token: settings.ghToken,
-      ref: settings.ghRef || 'main',
-      taskId,
-      taskToken,
-      baseUrl,
-    });
-    task.ghRunUrl = `https://github.com/${settings.ghRepo}/actions`;
-    task.status = 'running';
-    await store.saveTask(task);
-  } catch (e) {
-    await store.deleteTask(taskId);
-    project.history.push({ role: 'system', content: `⚠️ GitHub Actions 任务提交失败：${e.message}` });
-    project.updatedAt = Date.now();
-    await store.saveProject(project);
-    await store.clearChatStatus(id);
-    return json({ error: e.message }, 502);
+  let queuedNote = '';
+  if (executor === 'github') {
+    // 触发 GitHub Actions workflow_dispatch（runner 在 .github/workflows/builder-task.yml）
+    try {
+      await triggerGithubWorkflow({
+        repo: settings.ghRepo,
+        token: settings.ghToken,
+        ref: settings.ghRef || 'main',
+        taskId,
+        taskToken,
+        baseUrl,
+      });
+      task.ghRunUrl = `https://github.com/${settings.ghRepo}/actions`;
+      task.status = 'running';
+      await store.saveTask(task);
+    } catch (e) {
+      await store.deleteTask(taskId);
+      project.history.push({ role: 'system', content: `⚠️ GitHub Actions 任务提交失败：${e.message}` });
+      project.updatedAt = Date.now();
+      await store.saveProject(project);
+      await store.clearChatStatus(id);
+      return json({ error: e.message }, 502);
+    }
+    queuedNote = `任务已提交到 GitHub Actions（${settings.ghRepo}），排队等待执行… 运行日志：${task.ghRunUrl}`;
+  } else {
+    // 触发 CNB 云原生构建（api_trigger_builder 事件；可选 Clash 代理订阅解决访问 Cloudflare 网络问题）
+    try {
+      const r = await triggerCnbBuild({
+        repo: settings.cnbRepo,
+        token: settings.cnbToken,
+        branch: settings.cnbBranch || 'main',
+        taskId,
+        taskToken,
+        baseUrl,
+        fallbackIp: settings.cnbFallbackIp || '',
+        proxySub: settings.cnbProxySub || '',
+      });
+      task.cnbSn = r.sn || '';
+      task.buildLogUrl = r.buildLogUrl || '';
+      task.status = 'running';
+      await store.saveTask(task);
+    } catch (e) {
+      await store.deleteTask(taskId);
+      project.history.push({ role: 'system', content: `⚠️ CNB 任务提交失败：${e.message}` });
+      project.updatedAt = Date.now();
+      await store.saveProject(project);
+      await store.clearChatStatus(id);
+      return json({ error: e.message }, 502);
+    }
+    queuedNote = `任务已提交到 CNB 云构建（${settings.cnbRepo}${task.cnbSn ? ` SN ${task.cnbSn}` : ''}），排队等待执行…${
+      task.buildLogUrl ? ` 日志：${task.buildLogUrl}` : ''
+    }`;
   }
-
-  const queuedNote = `任务已提交到 GitHub Actions（${settings.ghRepo}），排队等待执行… 运行日志：${task.ghRunUrl}`;
   await store.setChatStatus(id, {
     status: 'running',
-    executor: 'github',
+    executor,
     taskId,
     startedAt: Date.now(),
     stage: 'queued',

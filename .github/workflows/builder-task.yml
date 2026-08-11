@@ -39,9 +39,9 @@ jobs:
         with:
           node-version: 22
 
-      - name: 安装 Playwright 浏览器（人机验证页自动抓取）
+      - name: 安装 Playwright 浏览器与 undici（人机验证抓取 / 可选代理）
         run: |
-          npm i playwright --no-save --no-package-lock --silent
+          npm i playwright undici --no-save --no-package-lock --silent
           npx playwright install --with-deps chromium
 
       - name: 执行构建器 Agent 任务

@@ -25,11 +25,15 @@ export async function browserFetchText(url, options = {}) {
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
   });
   try {
-    const context = await browser.newContext({
+    const contextOptions = {
       userAgent: BROWSER_UA,
       viewport: { width: 1280, height: 800 },
       locale: 'zh-CN',
-    });
+    };
+    // Clash 代理启用时，浏览器请求也走代理（目标站多被反爬，代理出口更稳定）
+    const proxy = options.proxy || process.env.CLASH_PROXY || process.env.HTTP_PROXY || process.env.http_proxy || '';
+    if (proxy) contextOptions.proxy = { server: proxy };
+    const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
     const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: waitMs });
     let status = response ? response.status() : 200;

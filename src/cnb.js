@@ -11,7 +11,7 @@
  */
 
 /** 触发一次 CNB 流水线（事件名需与仓库根目录 .cnb.yml 中 api_trigger_ 开头的事件一致） */
-export async function triggerCnbBuild({ repo, token, branch = 'main', taskId, taskToken, baseUrl, fallbackIp = '' }) {
+export async function triggerCnbBuild({ repo, token, branch = 'main', taskId, taskToken, baseUrl, fallbackIp = '', proxySub = '' }) {
   const res = await fetch(`https://api.cnb.cool/${repo}/-/build/start`, {
     method: 'POST',
     headers: {
@@ -29,6 +29,8 @@ export async function triggerCnbBuild({ repo, token, branch = 'main', taskId, ta
         BUILDER_BASE_URL: baseUrl,
         // 可选：CNB 容器访问构建器域名失败（DNS/网络污染）时用固定 IP 直连
         BUILDER_FALLBACK_IP: fallbackIp,
+        // 可选：Clash 代理订阅地址（CNB 容器内启动 mihomo，解决访问 Cloudflare/workers.dev 网络问题）
+        CNB_PROXY_SUB: proxySub,
       },
     }),
   });
