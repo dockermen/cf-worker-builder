@@ -228,6 +228,8 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
 
 ## 📝 更新记录
 
+- **2026-08-11**：v2.2.0 构建器域名切换为 worker.logg.click
+  - 自定义域由 `builder.logg.asia` 统一切换为 `worker.logg.click`（wrangler.toml routes、GitHub workflow 回调地址、runner 注释同步更新，旧自定义域已移除）
 - **2026-08-10**：v2.1.0 方案 B 执行器切换为 GitHub Actions（CNB 大陆容器访问 Cloudflare 不稳定，弃用）
   - 新增 `src/github.js`：GitHub API 触发 `workflow_dispatch`（`POST /repos/{repo}/actions/workflows/builder-task.yml/dispatches`），404/401 给出明确排查提示
   - 新增 `.github/workflows/builder-task.yml`：ubuntu + Node 20，`timeout-minutes: 360`（最长 6 小时），复用 `agent-runner/run.js`
@@ -307,7 +309,7 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
   - 前端：保存设置时 Key 留空视为沿用已保存值（修复误报缺配置）；所有请求加 120s 超时，模型响应慢时给出明确提示
   - 后端：LLM 调用（chat/completions 与 responses）加 90s 超时并返回明确错误
 - **2026-08-08**：v1.2.0 修复部署与接口兼容
-  - 部署：修复 10021 错误（模块 part Content-Type 改为 application/javascript+module）；已远程部署到 https://builder.logg.asia
+  - 部署：修复 10021 错误（模块 part Content-Type 改为 application/javascript+module）；已远程部署到 https://worker.logg.click
   - Agent：新增 responses 接口类型（OpenAI Responses API），设置面板可切换 chat/completions / responses
   - 前端：登录态提示识别 OAuth 在线登录，登录后不再误报未配置 Cloudflare
   - 提示词：强化 Cloudflare Worker 平台约束（禁 Node.js 特性、禁 npm 依赖、输出完整模块代码）

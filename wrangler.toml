@@ -5,7 +5,7 @@ workers_dev = true
 
 # 自定义域（解决 workers.dev 在大陆无法直连的问题）
 routes = [
-  { pattern = "builder.logg.asia", custom_domain = true }
+  { pattern = "worker.logg.click", custom_domain = true }
 ]
 
 # 前端静态资源
