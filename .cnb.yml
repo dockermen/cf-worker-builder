@@ -68,7 +68,7 @@ main:
                 PORT_OK=0
                 if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 7890 2>/dev/null; then
                   PORT_OK=1
-                elif grep -qiE ':(CA1E|ca1e)[[:space:]]' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+                elif grep -qiE ':(1ECA|1eca)[[:space:]]' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
                   PORT_OK=1
                 elif command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':7890'; then
                   PORT_OK=1
@@ -80,8 +80,8 @@ main:
                 else
                   echo "!! Clash 代理启动失败（7890 未监听），降级直连。mihomo 日志："
                   tail -30 /tmp/clash.log 2>/dev/null || true
-                  echo "--- tcp/tcp6 中 7890(CA1E) 记录 ---"
-                  grep -i 'CA1E' /proc/net/tcp /proc/net/tcp6 2>/dev/null || echo "(无)"
+                  echo "--- tcp/tcp6 中 7890(1ECA) 记录 ---"
+                  grep -i '1ECA' /proc/net/tcp /proc/net/tcp6 2>/dev/null || echo "(无)"
                   unset CLASH_PROXY
                 fi
               else

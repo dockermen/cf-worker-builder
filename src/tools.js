@@ -102,7 +102,7 @@ export function isCloudflareChallenge(result) {
 }
 
 /** 执行一次 HTTP 请求（10 秒超时，响应体截断） */
-export async function executeHttpTest(specOrSpecText) {
+export async function executeHttpTest(specOrSpecText, fetchImpl = fetch) {
   const parsed =
     typeof specOrSpecText === 'string' ? parseHttpTestSpec(specOrSpecText) : specOrSpecText;
   if (!parsed) return { error: 'test-http 格式无法解析' };
@@ -129,7 +129,7 @@ export async function executeHttpTest(specOrSpecText) {
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       ...(parsed.headers || {}),
     };
-    let res = await fetch(target, {
+    let res = await fetchImpl(target, {
       method,
       headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : parsed.body || undefined,
