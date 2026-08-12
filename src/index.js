@@ -131,7 +131,7 @@ async function handleApi(request, url, env, store) {
         cfTokenMasked: maskKey(settings.cfToken),
         hasCfToken: !!settings.cfToken,
         cfAccountId: settings.cfAccountId || '',
-        cfSubdomain: settings.cfSubdomain || '',
+        cfSubdomain: (settings.cfSubdomains || {})[(await currentOwnerKey(settings))] || settings.cfSubdomain || '',
         cnbRepo: settings.cnbRepo || '',
         cnbBranch: settings.cnbBranch || 'main',
         cnbFallbackIp: settings.cnbFallbackIp || '',
@@ -228,6 +228,8 @@ async function handleApi(request, url, env, store) {
       ghRef: String(body.ghRef || '').trim() || settings.ghRef || 'main',
       // 后台执行器选择：github / cnb / none
       executor: ['github', 'cnb', 'none'].includes(body.executor) ? body.executor : (settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none')),
+      // 各账号 workers.dev 子域缓存（按 accountId），切换账号不串域
+      cfSubdomains: settings.cfSubdomains || {},
       // 任务回传地址（默认 workers.dev 永久域名）
       builderBaseUrl: String(body.builderBaseUrl || '').trim() || settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
       // Agent 工具循环轮数上限（2-30，默认 8；模型不再调用工具时自动提前结束）
@@ -238,12 +240,15 @@ async function handleApi(request, url, env, store) {
       return json({ error: '请填写完整的 OpenAI 兼容配置（Base URL、Key、模型）' }, 400);
     }
 
-    // 手动 Token 方式下：可选校验 Cloudflare 凭据并缓存 workers.dev 子域
+    // 手动 Token 方式下：可选校验 Cloudflare 凭据并缓存 workers.dev 子域（按 accountId）
     let cfTestError = null;
     if (next.cfToken && next.cfAccountId) {
       try {
         const r = await testCloudflareConnection(next.cfToken, next.cfAccountId);
         next.cfSubdomain = r.subdomain;
+        const subs = next.cfSubdomains || {};
+        subs[next.cfAccountId] = r.subdomain;
+        next.cfSubdomains = subs;
       } catch (e) {
         cfTestError = e.message;
       }
@@ -322,12 +327,9 @@ async function handleApi(request, url, env, store) {
       // 登录成功后探测并缓存 workers.dev 子域
       let subdomain = '';
       try {
-        const cred = await getCredentials(store, await store.getSettings());
-        const sd = await getAccountSubdomain(cred.token, cred.accountId);
-        subdomain = sd;
         const settings = await store.getSettings();
-        settings.cfSubdomain = sd;
-        await store.saveSettings(settings);
+        const cred = await getCredentials(store, settings);
+        subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
       } catch (_) {
         /* ignore */
       }
@@ -748,12 +750,7 @@ async function asyncChatAction(request, store, id) {
   try {
     const cred = await getCredentials(store, settings);
     cf = { token: cred.token, accountId: cred.accountId };
-    if (!settings.cfSubdomain) {
-      const r = await getAccountSubdomain(cf.token, cf.accountId);
-      settings.cfSubdomain = r.subdomain;
-      await store.saveSettings(settings);
-    }
-    cf.subdomain = settings.cfSubdomain;
+    cf.subdomain = await getSubdomainForAccount(store, settings, cf.token, cf.accountId);
   } catch (e) {
     await store.clearChatStatus(id);
     return json({ error: `Cloudflare 凭据不可用：${e.message}` }, 400);
@@ -1508,20 +1505,30 @@ async function smartSmokeTest(url, code) {
   return last;
 }
 
-/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
+/**
+ * 获取指定账号的 workers.dev 子域（按 accountId 缓存）。
+ * 不同 Cloudflare 账号/空间子域不同，必须按账号隔离，避免切换账号后串用旧账号子域。
+ */
+async function getSubdomainForAccount(store, settings, token, accountId) {
+  const subs = settings.cfSubdomains || {};
+  if (subs[accountId]) return subs[accountId];
+  const r = await getAccountSubdomain(token, accountId);
+  subs[accountId] = r.subdomain;
+  settings.cfSubdomains = subs;
+  await store.saveSettings(settings);
+  return r.subdomain;
+}
+
+/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 按账号缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
 async function doDeploy(store, settings, project, note) {
   const cred = await getCredentials(store, settings);
-  if (!settings.cfSubdomain) {
-    const r = await getAccountSubdomain(cred.token, cred.accountId);
-    settings.cfSubdomain = r.subdomain;
-    await store.saveSettings(settings);
-  }
+  const subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
   await deployWorker({
     cfToken: cred.token,
     accountId: cred.accountId,
     scriptName: project.workerName,
     code: project.code,
   });
-  const url = `https://${project.workerName}.${settings.cfSubdomain}.workers.dev`;
+  const url = `https://${project.workerName}.${subdomain}.workers.dev`;
   return { url };
 }

@@ -1403,6 +1403,9 @@ let oauthTimer = null;
 function renderOauthStatus() {
   const box = $('#oauthStatusBox');
   if (!box) return;
+  // 同步当前账号的 workers.dev 子域显示（切换账号后刷新）
+  const st = state.settings || {};
+  $('#cfTestResult').textContent = st.cfSubdomain ? `子域：${st.cfSubdomain}.workers.dev` : '';
   box.innerHTML = '';
   const o = state.oauth || { loggedIn: false };
   const accounts = o.accounts || [];
@@ -1482,13 +1485,22 @@ function renderOauthStatus() {
   }
 }
 
-/** 切换当前激活的 Cloudflare 账号 */
+/** 切换当前激活的 Cloudflare 账号：切换后实时刷新 Cloudflare 信息与项目列表 */
 async function switchOauth(accountId) {
   try {
     const r = await api('/api/oauth/switch', { method: 'POST', body: JSON.stringify({ accountId }) });
     state.oauth = r.oauth;
+    // 重新拉取全局状态：settings（子域等账号相关信息）+ 项目列表（按账号隔离）
+    await refreshProjects();
     renderOauthStatus();
-    toast('✅ 已切换到账号：' + (r.oauth.email || r.oauth.accountName || accountId));
+    // 若当前打开的项目不属于新账号，自动切到新账号第一个项目（或空态）
+    const projs = state.projects || [];
+    if (state.project && !projs.some((p) => p.id === state.project.id)) {
+      state.project = null;
+      if (projs.length) await openProject(projs[0].id);
+      else showEmpty();
+    }
+    toast('✅ 已切换到账号：' + ((r.oauth && (r.oauth.email || r.oauth.accountName)) || accountId));
   } catch (e) { toast(e.message, true); }
 }
 
