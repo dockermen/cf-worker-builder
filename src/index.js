@@ -23,6 +23,7 @@ import {
   logoutOAuth,
   getCredentials,
   publicOAuth,
+  switchOAuth,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
 import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes, detectProxyWorker } from './tools.js';
@@ -94,6 +95,8 @@ async function handleApi(request, url, env, store) {
     const settings = await store.getSettings();
     const projects = await store.listProjects();
     const oauth = await store.getOAuth();
+    const oauthAccounts = await store.listOAuthAccounts();
+    const activeOAuthId = await store.getActiveOAuthId();
     return json({
       settings: {
         openaiBaseUrl: settings.openaiBaseUrl || '',
@@ -123,7 +126,16 @@ async function handleApi(request, url, env, store) {
         builderBaseUrl: settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
         maxToolRounds: Number(settings.maxToolRounds) || 8,
       },
-      oauth: publicOAuth(oauth),
+      oauth: {
+        ...publicOAuth(oauth),
+        activeId: activeOAuthId,
+        accounts: oauthAccounts.map((a) => ({
+          ...publicOAuth(a),
+          key: a.accountId || a.email || '',
+          email: a.email || '',
+          accountName: a.accountName || '',
+        })),
+      },
       projects,
     });
   }
@@ -309,8 +321,49 @@ async function handleApi(request, url, env, store) {
   }
 
   if (pathname === '/api/oauth/logout' && method === 'POST') {
-    await logoutOAuth(store);
-    return json({ ok: true });
+    const body = await readBody();
+    await logoutOAuth(store, String(body.accountId || ''));
+    const accounts = await store.listOAuthAccounts();
+    const activeId = await store.getActiveOAuthId();
+    const active = accounts.find((a) => (a.accountId || a.email) === activeId) || null;
+    return json({
+      ok: true,
+      oauth: {
+        ...publicOAuth(active),
+        activeId,
+        accounts: accounts.map((a) => ({
+          ...publicOAuth(a),
+          key: a.accountId || a.email || '',
+          email: a.email || '',
+          accountName: a.accountName || '',
+        })),
+      },
+    });
+  }
+
+  // 切换当前激活账号（多账号登录态各自保留）
+  if (pathname === '/api/oauth/switch' && method === 'POST') {
+    const body = await readBody();
+    try {
+      const oauth = await switchOAuth(store, String(body.accountId || ''));
+      const accounts = await store.listOAuthAccounts();
+      const activeId = await store.getActiveOAuthId();
+      return json({
+        ok: true,
+        oauth: {
+          ...publicOAuth(oauth),
+          activeId,
+          accounts: accounts.map((a) => ({
+            ...publicOAuth(a),
+            key: a.accountId || a.email || '',
+            email: a.email || '',
+            accountName: a.accountName || '',
+          })),
+        },
+      });
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
   }
 
   // ============ 项目列表 ============

@@ -149,9 +149,14 @@ export async function refreshOAuthToken(store) {
   return oauth;
 }
 
-/** 退出登录：撤销令牌并清除本地保存 */
-export async function logoutOAuth(store) {
-  const oauth = await store.getOAuth();
+/**
+ * 退出登录：撤销令牌并移除指定账号（默认当前激活账号）。
+ * 多账号下只移除目标账号，其余账号登录态保留；移除当前账号后自动切换到剩余第一个。
+ */
+export async function logoutOAuth(store, accountId = '') {
+  const accounts = await store.getOAuthAccounts();
+  const targetId = accountId || (await store.getActiveOAuthId());
+  const oauth = accounts[targetId];
   if (oauth && oauth.accessToken) {
     try {
       await fetch(`${AUTH_DOMAIN}/oauth2/revoke`, {
@@ -166,7 +171,15 @@ export async function logoutOAuth(store) {
       /* ignore */
     }
   }
-  await store.clearOAuth();
+  await store.removeOAuthAccount(targetId);
+}
+
+/** 切换当前激活账号（多账号登录态各自保留） */
+export async function switchOAuth(store, accountId) {
+  const ok = await store.switchOAuthAccount(accountId);
+  if (!ok) throw new Error('账号不存在或已失效');
+  const oauth = await store.getOAuth();
+  return oauth;
 }
 
 /**

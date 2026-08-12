@@ -188,6 +188,11 @@
   .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 10px; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
   .check input { accent-color: var(--accent); }
+  .oauth-accounts { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+  .oauth-accounts-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .oauth-account-row { display: flex; align-items: center; flex-wrap: wrap; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; margin-bottom: 4px; background: rgba(139,147,167,.06); }
+  .oauth-account-row.active { background: rgba(79,140,255,.12); border: 1px solid rgba(79,140,255,.35); }
+  .oauth-account-name { flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* ---------- 代码页 ---------- */
   .code-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 10px; }
@@ -1399,7 +1404,9 @@ function renderOauthStatus() {
   if (!box) return;
   box.innerHTML = '';
   const o = state.oauth || { loggedIn: false };
-  if (o.loggedIn) {
+  const accounts = o.accounts || [];
+  if (o.loggedIn || accounts.length) {
+    // 当前账号信息
     const info = document.createElement('div');
     info.className = 'oauth-info';
     info.innerHTML = `
@@ -1411,7 +1418,45 @@ function renderOauthStatus() {
       </div>`;
     box.appendChild(info);
     $('#btnOauthRefresh')?.addEventListener('click', refreshOauth);
-    $('#btnOauthLogout')?.addEventListener('click', logoutOauth);
+    $('#btnOauthLogout')?.addEventListener('click', () => logoutOauthAccount(''));
+
+    // 多账号列表（切换登录后各账号状态保留，可随时切换回来）
+    if (accounts.length > 1) {
+      const listBox = document.createElement('div');
+      listBox.className = 'oauth-accounts';
+      const title = document.createElement('div');
+      title.className = 'oauth-accounts-title';
+      title.textContent = '已登录账号（点击切换，登录态各自保留）：';
+      listBox.appendChild(title);
+      accounts.forEach((acc) => {
+        const isActive = acc.key && acc.key === o.activeId;
+        const row = document.createElement('div');
+        row.className = 'oauth-account-row' + (isActive ? ' active' : '');
+        const label = acc.email || acc.accountName || acc.accountId || acc.key;
+        const nameEl = document.createElement('span');
+        nameEl.className = 'oauth-account-name';
+        nameEl.textContent = (isActive ? '✅ ' : '') + label + (isActive ? '（当前）' : '');
+        row.appendChild(nameEl);
+        if (!isActive) {
+          const sw = document.createElement('button');
+          sw.type = 'button';
+          sw.className = 'btn ghost';
+          sw.textContent = '切换';
+          sw.style.cssText = 'font-size:12px;padding:4px 10px;margin-left:8px';
+          sw.addEventListener('click', () => switchOauth(acc.key));
+          row.appendChild(sw);
+        }
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'btn ghost danger-ghost';
+        del.textContent = '退出';
+        del.style.cssText = 'font-size:12px;padding:4px 10px;margin-left:6px';
+        del.addEventListener('click', () => logoutOauthAccount(acc.key));
+        row.appendChild(del);
+        listBox.appendChild(row);
+      });
+      box.appendChild(listBox);
+    }
   } else {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1420,6 +1465,28 @@ function renderOauthStatus() {
     btn.addEventListener('click', startOauthLogin);
     box.appendChild(btn);
   }
+}
+
+/** 切换当前激活的 Cloudflare 账号 */
+async function switchOauth(accountId) {
+  try {
+    const r = await api('/api/oauth/switch', { method: 'POST', body: JSON.stringify({ accountId }) });
+    state.oauth = r.oauth;
+    renderOauthStatus();
+    toast('✅ 已切换到账号：' + (r.oauth.email || r.oauth.accountName || accountId));
+  } catch (e) { toast(e.message, true); }
+}
+
+/** 退出指定 Cloudflare 账号（空 = 当前账号），其余账号保留 */
+async function logoutOauthAccount(accountId) {
+  const target = accountId || (state.oauth && state.oauth.email) || '当前账号';
+  if (!confirm(`确定退出该 Cloudflare 账号（${target}）？其他已登录账号会保留。`)) return;
+  try {
+    const r = await api('/api/oauth/logout', { method: 'POST', body: JSON.stringify({ accountId }) });
+    state.oauth = r.oauth || { loggedIn: false };
+    renderOauthStatus();
+    toast('已退出该账号');
+  } catch (e) { toast(e.message, true); }
 }
 
 async function startOauthLogin() {
@@ -1480,16 +1547,6 @@ async function refreshOauth() {
     const r = await api('/api/oauth/refresh', { method: 'POST' });
     state.oauth = r.oauth;
     toast('✅ 令牌已刷新');
-  } catch (e) { toast(e.message, true); }
-}
-
-async function logoutOauth() {
-  if (!confirm('确定退出 Cloudflare 在线登录？之后部署将需要重新登录。')) return;
-  try {
-    await api('/api/oauth/logout', { method: 'POST' });
-    state.oauth = { loggedIn: false };
-    renderOauthStatus();
-    toast('已退出登录');
   } catch (e) { toast(e.message, true); }
 }
 
