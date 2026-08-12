@@ -144,7 +144,18 @@ export function makeStore(kv) {
      * clearOAuth 清空全部（退出所有账号）。
      */
     async getOAuthAccounts() {
-      const raw = await kv.get('cf_oauth_accounts', 'json');
+      let raw = await kv.get('cf_oauth_accounts', 'json');
+      if (!raw || typeof raw !== 'object' || !Object.keys(raw).length) {
+        // 兼容迁移：旧的单账号 cf_oauth 数据并入多账号结构，避免升级后登录态丢失
+        const old = await kv.get('cf_oauth', 'json');
+        if (old && old.accessToken) {
+          const key = old.accountId || old.email || 'default';
+          raw = { [key]: old };
+          await this.saveOAuthAccounts(raw);
+          await this.setActiveOAuthId(key);
+          await kv.delete('cf_oauth');
+        }
+      }
       return raw && typeof raw === 'object' ? raw : {};
     },
 
