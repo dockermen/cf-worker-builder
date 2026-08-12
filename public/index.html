@@ -1459,9 +1459,17 @@ function renderOauthStatus() {
       if (accounts.length === 1) {
         const tip = document.createElement('div');
         tip.className = 'oauth-accounts-tip';
-        tip.textContent = '💡 当前仅登录 1 个账号：再点一次「开始在线登录」授权另一个 Cloudflare 账号后，即可在此列表随时切换（各账号登录态各自保留）。';
+        tip.textContent = '💡 当前仅登录 1 个账号：点下方「➕ 再登录一个账号」授权另一个 Cloudflare 账号后，即可在此列表随时切换（各账号登录态各自保留）。';
         listBox.appendChild(tip);
       }
+      // 常驻「再登录一个账号」按钮（即使已有账号也可继续添加，实现多账号切换）
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'btn ghost';
+      addBtn.textContent = '➕ 再登录一个账号';
+      addBtn.style.cssText = 'font-size:12px;padding:6px 12px;margin-top:8px;width:100%';
+      addBtn.addEventListener('click', startOauthLogin);
+      listBox.appendChild(addBtn);
       box.appendChild(listBox);
     }
   } else {
