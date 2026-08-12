@@ -149,14 +149,9 @@ export async function refreshOAuthToken(store) {
   return oauth;
 }
 
-/**
- * 退出登录：撤销令牌并移除指定账号（默认当前激活账号）。
- * 多账号下只移除目标账号，其余账号登录态保留；移除当前账号后自动切换到剩余第一个。
- */
-export async function logoutOAuth(store, accountId = '') {
-  const accounts = await store.getOAuthAccounts();
-  const targetId = accountId || (await store.getActiveOAuthId());
-  const oauth = accounts[targetId];
+/** 退出登录：撤销令牌并清除本地保存 */
+export async function logoutOAuth(store) {
+  const oauth = await store.getOAuth();
   if (oauth && oauth.accessToken) {
     try {
       await fetch(`${AUTH_DOMAIN}/oauth2/revoke`, {
@@ -171,41 +166,7 @@ export async function logoutOAuth(store, accountId = '') {
       /* ignore */
     }
   }
-  await store.removeOAuthAccount(targetId);
-}
-
-/**
- * 按指定账号刷新令牌（用于项目归属账号的 token 过期时刷新；不切换当前激活账号）
- */
-export async function refreshOAuthAccount(store, accountId) {
-  const accounts = await store.getOAuthAccounts();
-  const oauth = accounts[accountId];
-  if (!oauth || !oauth.refreshToken) {
-    throw new Error('该账号没有可用的刷新令牌，请重新登录该账号');
-  }
-  const { res, data } = await postForm(TOKEN_URL, {
-    grant_type: 'refresh_token',
-    refresh_token: oauth.refreshToken,
-    client_id: oauth.clientId,
-  });
-  if (!res.ok || !data.access_token) {
-    throw new Error(
-      `刷新令牌失败（${res.status}）：${JSON.stringify(data).slice(0, 200)}，请重新登录该账号`
-    );
-  }
-  oauth.accessToken = data.access_token;
-  if (data.refresh_token) oauth.refreshToken = data.refresh_token;
-  oauth.expiresAt = Date.now() + (data.expires_in || 3600) * 1000;
-  await store.updateOAuthAccount(accountId, oauth);
-  return oauth;
-}
-
-/** 切换当前激活账号（多账号登录态各自保留） */
-export async function switchOAuth(store, accountId) {
-  const ok = await store.switchOAuthAccount(accountId);
-  if (!ok) throw new Error('账号不存在或已失效');
-  const oauth = await store.getOAuth();
-  return oauth;
+  await store.clearOAuth();
 }
 
 /**

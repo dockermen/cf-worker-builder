@@ -23,8 +23,6 @@ import {
   logoutOAuth,
   getCredentials,
   publicOAuth,
-  switchOAuth,
-  refreshOAuthAccount,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
 import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes, detectProxyWorker } from './tools.js';
@@ -72,56 +70,6 @@ async function handleApi(request, url, env, store) {
     }
   };
 
-  /**
-   * 当前账号归属 key：OAuth 激活账号的 accountId（同一邮箱授权不同空间时以 accountId 区分）；
-   * 手动 API Token 模式为 'token'；未配置任何凭据返回 ''。
-   */
-  const currentOwnerKey = async (settings) => {
-    const oauth = await store.getOAuth();
-    if (oauth && oauth.accessToken && oauth.accountId) return oauth.accountId;
-    if (settings && settings.cfToken) return 'token';
-    return '';
-  };
-
-  /**
-   * 获取「项目归属账号」的部署凭据：优先用项目 ownerKey 对应的 OAuth 账号
-   * （token 过期按账号刷新，不切换当前激活账号）；ownerKey 为空（旧项目）或非 OAuth
-   * （手动 token）时回退当前激活账号凭据。
-   */
-  const getCredentialsForOwner = async (settings, ownerKey) => {
-    const accounts = await store.getOAuthAccounts();
-    const oauth = ownerKey && accounts[ownerKey];
-    if (oauth && oauth.accessToken) {
-      let token = oauth.accessToken;
-      if (Date.now() > oauth.expiresAt - 60000) {
-        try {
-          const refreshed = await refreshOAuthAccount(store, ownerKey);
-          token = refreshed.accessToken;
-        } catch (_) {
-          // 刷新失败：沿用旧 token 尝试，若仍不可用由 Cloudflare API 报错
-        }
-      }
-      if (!oauth.accountId) {
-        throw new Error('该账号缺少 Account ID，请重新登录该账号或手动填写 API Token');
-      }
-      return { token, accountId: oauth.accountId, source: 'oauth' };
-    }
-    // ownerKey 为空（旧项目）或手动 Token 模式：回退当前激活账号
-    return getCredentials(store, settings);
-  };
-
-  /** 项目列表可见性：旧项目（ownerKey 为空）所有账号可见；新项目仅归属账号可见 */
-  const visibleProjects = (list, ownerKey) => (list || []).filter((p) => !p.ownerKey || p.ownerKey === ownerKey);
-
-  /** 校验项目归属：返回 { ok, project? }；归属不符视为不存在（404），兼容旧项目 */
-  const assertProjectOwner = async (id, settings) => {
-    const project = await store.getProject(id);
-    if (!project) return { ok: false, status: 404 };
-    const ownerKey = await currentOwnerKey(settings);
-    if (project.ownerKey && project.ownerKey !== ownerKey) return { ok: false, status: 404 };
-    return { ok: true, project };
-  };
-
   // ============ 访问密码 ============
   if (pathname === '/api/auth/login' && method === 'POST') {
     const body = await readBody();
@@ -145,10 +93,7 @@ async function handleApi(request, url, env, store) {
   if (pathname === '/api/state' && method === 'GET') {
     const settings = await store.getSettings();
     const projects = await store.listProjects();
-    const ownerKey = await currentOwnerKey(settings);
     const oauth = await store.getOAuth();
-    const oauthAccounts = await store.listOAuthAccounts();
-    const activeOAuthId = await store.getActiveOAuthId();
     return json({
       settings: {
         openaiBaseUrl: settings.openaiBaseUrl || '',
@@ -159,7 +104,7 @@ async function handleApi(request, url, env, store) {
         cfTokenMasked: maskKey(settings.cfToken),
         hasCfToken: !!settings.cfToken,
         cfAccountId: settings.cfAccountId || '',
-        cfSubdomain: (settings.cfSubdomains || {})[(await currentOwnerKey(settings))] || settings.cfSubdomain || '',
+        cfSubdomain: settings.cfSubdomain || '',
         cnbRepo: settings.cnbRepo || '',
         cnbBranch: settings.cnbBranch || 'main',
         cnbFallbackIp: settings.cnbFallbackIp || '',
@@ -178,18 +123,8 @@ async function handleApi(request, url, env, store) {
         builderBaseUrl: settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
         maxToolRounds: Number(settings.maxToolRounds) || 8,
       },
-      oauth: {
-        ...publicOAuth(oauth),
-        activeId: activeOAuthId,
-        accounts: oauthAccounts.map((a) => ({
-          ...publicOAuth(a),
-          key: a.accountId || a.email || '',
-          email: a.email || '',
-          accountName: a.accountName || '',
-        })),
-      },
-      // 账号隔离：只返回当前账号（或手动 Token）归属的项目；旧项目（无 ownerKey）对所有账号可见
-      projects: visibleProjects(projects, ownerKey),
+      oauth: publicOAuth(oauth),
+      projects,
     });
   }
 
@@ -256,8 +191,6 @@ async function handleApi(request, url, env, store) {
       ghRef: String(body.ghRef || '').trim() || settings.ghRef || 'main',
       // 后台执行器选择：github / cnb / none
       executor: ['github', 'cnb', 'none'].includes(body.executor) ? body.executor : (settings.executor || (settings.ghRepo && settings.ghToken ? 'github' : 'none')),
-      // 各账号 workers.dev 子域缓存（按 accountId），切换账号不串域
-      cfSubdomains: settings.cfSubdomains || {},
       // 任务回传地址（默认 workers.dev 永久域名）
       builderBaseUrl: String(body.builderBaseUrl || '').trim() || settings.builderBaseUrl || DEFAULT_BUILDER_BASE_URL,
       // Agent 工具循环轮数上限（2-30，默认 8；模型不再调用工具时自动提前结束）
@@ -268,15 +201,12 @@ async function handleApi(request, url, env, store) {
       return json({ error: '请填写完整的 OpenAI 兼容配置（Base URL、Key、模型）' }, 400);
     }
 
-    // 手动 Token 方式下：可选校验 Cloudflare 凭据并缓存 workers.dev 子域（按 accountId）
+    // 手动 Token 方式下：可选校验 Cloudflare 凭据并缓存 workers.dev 子域
     let cfTestError = null;
     if (next.cfToken && next.cfAccountId) {
       try {
         const r = await testCloudflareConnection(next.cfToken, next.cfAccountId);
         next.cfSubdomain = r.subdomain;
-        const subs = next.cfSubdomains || {};
-        subs[next.cfAccountId] = r.subdomain;
-        next.cfSubdomains = subs;
       } catch (e) {
         cfTestError = e.message;
       }
@@ -355,9 +285,12 @@ async function handleApi(request, url, env, store) {
       // 登录成功后探测并缓存 workers.dev 子域
       let subdomain = '';
       try {
+        const cred = await getCredentials(store, await store.getSettings());
+        const sd = await getAccountSubdomain(cred.token, cred.accountId);
+        subdomain = sd;
         const settings = await store.getSettings();
-        const cred = await getCredentials(store, settings);
-        subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
+        settings.cfSubdomain = sd;
+        await store.saveSettings(settings);
       } catch (_) {
         /* ignore */
       }
@@ -376,72 +309,13 @@ async function handleApi(request, url, env, store) {
   }
 
   if (pathname === '/api/oauth/logout' && method === 'POST') {
-    const body = await readBody();
-    await logoutOAuth(store, String(body.accountId || ''));
-    const accounts = await store.listOAuthAccounts();
-    const activeId = await store.getActiveOAuthId();
-    const active = accounts.find((a) => (a.accountId || a.email) === activeId) || null;
-    return json({
-      ok: true,
-      oauth: {
-        ...publicOAuth(active),
-        activeId,
-        accounts: accounts.map((a) => ({
-          ...publicOAuth(a),
-          key: a.accountId || a.email || '',
-          email: a.email || '',
-          accountName: a.accountName || '',
-        })),
-      },
-    });
+    await logoutOAuth(store);
+    return json({ ok: true });
   }
 
-  // 切换当前激活账号（多账号登录态各自保留）
-  if (pathname === '/api/oauth/switch' && method === 'POST') {
-    const body = await readBody();
-    try {
-      const oauth = await switchOAuth(store, String(body.accountId || ''));
-      // 切换后立即获取新账号的 workers.dev 子域并缓存（失败不阻塞，部署时会再取）
-      let subdomain = '';
-      let subErrMsg = '';
-      try {
-        const settings = await store.getSettings();
-        const cred = await getCredentials(store, settings);
-        // 直接查询当前账号子域并按 accountId 缓存（不依赖函数，规避历史版本差异）
-        subdomain = await getAccountSubdomain(cred.token, cred.accountId);
-        const subs = settings.cfSubdomains || {};
-        subs[cred.accountId] = subdomain;
-        settings.cfSubdomains = subs;
-        await store.saveSettings(settings);
-      } catch (subErr) {
-        subErrMsg = String((subErr && subErr.message) || subErr);
-        console.error('[oauth/switch] 子域缓存失败:', subErrMsg);
-      }
-      const accounts = await store.listOAuthAccounts();
-      const activeId = await store.getActiveOAuthId();
-      return json({
-        ok: true,
-        oauth: {
-          ...publicOAuth(oauth),
-          activeId,
-          accounts: accounts.map((a) => ({
-            ...publicOAuth(a),
-            key: a.accountId || a.email || '',
-            email: a.email || '',
-            accountName: a.accountName || '',
-          })),
-        },
-      });
-    } catch (e) {
-      return json({ error: e.message }, 400);
-    }
-  }
-
-  // ============ 项目列表（按账号隔离） ============
+  // ============ 项目列表 ============
   if (pathname === '/api/projects' && method === 'GET') {
-    const settings = await store.getSettings();
-    const ownerKey = await currentOwnerKey(settings);
-    return json({ projects: visibleProjects(await store.listProjects(), ownerKey) });
+    return json({ projects: await store.listProjects() });
   }
 
   // ============ 创建项目 ============
@@ -453,14 +327,11 @@ async function handleApi(request, url, env, store) {
     const id = crypto.randomUUID();
     const workerName = `${slugify(name)}-${id.slice(0, 4)}`;
     const now = Date.now();
-    const settings = await store.getSettings();
-    const ownerKey = await currentOwnerKey(settings);
     const project = {
       id,
       name,
       description: String(body.description || '').trim(),
       workerName,
-      ownerKey, // 归属当前 Cloudflare 账号（accountId）；手动 Token 模式为 'token'
       source: 'created', // created=构建器创建，linked=关联已有 Worker
       code: DEFAULT_CODE,
       url: '',
@@ -480,15 +351,10 @@ async function handleApi(request, url, env, store) {
     return json({ project });
   }
 
-  // ============ 单个项目：GET / DELETE（按账号隔离） ============
-  // 注意：import 是子路径（/api/projects/import），必须排除，否则会被当成项目 id 走归属校验返回 404
-  const projectMatch = pathname.match(/^\/api\/projects\/(?!import$)([^/]+)$/);
+  // ============ 单个项目：GET / DELETE ============
+  const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch) {
     const id = projectMatch[1];
-    {
-      const guard = await assertProjectOwner(id, await store.getSettings());
-      if (!guard.ok) return json({ error: '项目不存在' }, 404);
-    }
     if (method === 'GET') {
       const project = await store.getProject(id);
       if (!project) return json({ error: '项目不存在' }, 404);
@@ -551,13 +417,11 @@ async function handleApi(request, url, env, store) {
     if (!code) return json({ error: '未能获取到该 Worker 的代码' }, 400);
     const id = crypto.randomUUID();
     const now = Date.now();
-    const ownerKey = await currentOwnerKey(settings);
     const project = {
       id,
       name: body.name ? String(body.name).trim() : workerName,
       description: `已关联 Cloudflare Worker：${workerName}（${isModule ? 'ES Module' : 'Service Worker'} 格式）`,
       workerName,
-      ownerKey, // 归属当前账号（accountId / token）
       source: 'linked', // 关联项目：删除时只移除本地，不影响远程 Worker
       code,
       url: '',
@@ -605,9 +469,7 @@ async function handleApi(request, url, env, store) {
   // ============ 项目版本控制 ============
   const versionsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions$/);
   if (versionsMatch && method === 'GET') {
-    const guard = await assertProjectOwner(versionsMatch[1], await store.getSettings());
-    if (!guard.ok) return json({ error: '项目不存在' }, 404);
-    const project = guard.project;
+    const project = await store.getProject(versionsMatch[1]);
     if (!project) return json({ error: '项目不存在' }, 404);
     const versions = (project.versions || []).slice().reverse(); // 新版在前
     return json({ versions, nextVersion: project.nextVersion || 1 });
@@ -615,9 +477,7 @@ async function handleApi(request, url, env, store) {
 
   const versionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/(\d+)(?:\/restore)?$/);
   if (versionMatch && (method === 'GET' || method === 'POST')) {
-    const guard = await assertProjectOwner(versionMatch[1], await store.getSettings());
-    if (!guard.ok) return json({ error: '项目不存在' }, 404);
-    const project = guard.project;
+    const project = await store.getProject(versionMatch[1]);
     if (!project) return json({ error: '项目不存在' }, 404);
     const v = Number(versionMatch[2]);
     const ver = (project.versions || []).find((x) => x.v === v);
@@ -654,9 +514,7 @@ async function handleApi(request, url, env, store) {
   // ============ 版本打 tag（标记版本永久保留，不受数量上限限制） ============
   const tagMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/(\d+)\/tag$/);
   if (tagMatch && method === 'POST') {
-    const guard = await assertProjectOwner(tagMatch[1], await store.getSettings());
-    if (!guard.ok) return json({ error: '项目不存在' }, 404);
-    const project = guard.project;
+    const project = await store.getProject(tagMatch[1]);
     if (!project) return json({ error: '项目不存在' }, 404);
     const v = Number(tagMatch[2]);
     const ver = (project.versions || []).find((x) => x.v === v);
@@ -671,16 +529,12 @@ async function handleApi(request, url, env, store) {
   // ============ 对话进行中状态查询 ============
   const statusMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status$/);
   if (statusMatch && method === 'GET') {
-    const guard = await assertProjectOwner(statusMatch[1], await store.getSettings());
-    if (!guard.ok) return json({ error: '项目不存在' }, 404);
     const status = await store.getChatStatus(statusMatch[1]);
     return json({ status });
   }
   // 手动结束卡死的后台任务（执行器挂了但状态未清时，前端提供「结束等待」按钮）
   const statusClearMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status\/clear$/);
   if (statusClearMatch && method === 'POST') {
-    const guard = await assertProjectOwner(statusClearMatch[1], await store.getSettings());
-    if (!guard.ok) return json({ error: '项目不存在' }, 404);
     await store.clearChatStatus(statusClearMatch[1]);
     return json({ ok: true });
   }
@@ -690,10 +544,6 @@ async function handleApi(request, url, env, store) {
   if (actionMatch) {
     const id = actionMatch[1];
     const action = actionMatch[2];
-    {
-      const guard = await assertProjectOwner(id, await store.getSettings());
-      if (!guard.ok) return json({ error: '项目不存在' }, 404);
-    }
 
     if (action === 'chat' && method === 'POST') {
       return await chatAction(request, store, id);
@@ -789,12 +639,17 @@ async function asyncChatAction(request, store, id) {
   await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
   await store.setChatStatus(id, { status: 'running', executor, taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
 
-  // 解析「项目归属账号」的 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
+  // 解析 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
   let cf;
   try {
-    const cred = await getCredentialsForOwner(settings, project.ownerKey);
+    const cred = await getCredentials(store, settings);
     cf = { token: cred.token, accountId: cred.accountId };
-    cf.subdomain = await getSubdomainForAccount(store, settings, cf.token, cf.accountId);
+    if (!settings.cfSubdomain) {
+      const r = await getAccountSubdomain(cf.token, cf.accountId);
+      settings.cfSubdomain = r.subdomain;
+      await store.saveSettings(settings);
+    }
+    cf.subdomain = settings.cfSubdomain;
   } catch (e) {
     await store.clearChatStatus(id);
     return json({ error: `Cloudflare 凭据不可用：${e.message}` }, 400);
@@ -1549,31 +1404,20 @@ async function smartSmokeTest(url, code) {
   return last;
 }
 
-/**
- * 获取指定账号的 workers.dev 子域（按 accountId 缓存）。
- * 不同 Cloudflare 账号/空间子域不同，必须按账号隔离，避免切换账号后串用旧账号子域。
- */
-async function getSubdomainForAccount(store, settings, token, accountId) {
-  const subs = settings.cfSubdomains || {};
-  if (subs[accountId] && subs[accountId] !== '') return subs[accountId];
-  const r = await getAccountSubdomain(token, accountId);
-  subs[accountId] = r.subdomain;
-  settings.cfSubdomains = subs;
-  await store.saveSettings(settings);
-  return r.subdomain;
-}
-
-/** 执行部署：解析「项目归属账号」凭据 → 按账号缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
+/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
 async function doDeploy(store, settings, project, note) {
-  // 关键：使用项目归属账号的凭据（ownerKey），避免切换账号后部署到错误账号、URL 子域串用
-  const cred = await getCredentialsForOwner(settings, project.ownerKey);
-  const subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
+  const cred = await getCredentials(store, settings);
+  if (!settings.cfSubdomain) {
+    const r = await getAccountSubdomain(cred.token, cred.accountId);
+    settings.cfSubdomain = r.subdomain;
+    await store.saveSettings(settings);
+  }
   await deployWorker({
     cfToken: cred.token,
     accountId: cred.accountId,
     scriptName: project.workerName,
     code: project.code,
   });
-  const url = `https://${project.workerName}.${subdomain}.workers.dev`;
+  const url = `https://${project.workerName}.${settings.cfSubdomain}.workers.dev`;
   return { url };
 }

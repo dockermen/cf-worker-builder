@@ -188,12 +188,6 @@
   .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 10px; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
   .check input { accent-color: var(--accent); }
-  .oauth-accounts { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
-  .oauth-accounts-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .oauth-account-row { display: flex; align-items: center; flex-wrap: wrap; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; margin-bottom: 4px; background: rgba(139,147,167,.06); }
-  .oauth-account-row.active { background: rgba(79,140,255,.12); border: 1px solid rgba(79,140,255,.35); }
-  .oauth-account-name { flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .oauth-accounts-tip { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
 
   /* ---------- 代码页 ---------- */
   .code-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 10px; }
@@ -1403,14 +1397,9 @@ let oauthTimer = null;
 function renderOauthStatus() {
   const box = $('#oauthStatusBox');
   if (!box) return;
-  // 同步当前账号的 workers.dev 子域显示（切换账号后刷新）
-  const st = state.settings || {};
-  $('#cfTestResult').textContent = st.cfSubdomain ? `子域：${st.cfSubdomain}.workers.dev` : '';
   box.innerHTML = '';
   const o = state.oauth || { loggedIn: false };
-  const accounts = o.accounts || [];
-  if (o.loggedIn || accounts.length) {
-    // 当前账号信息
+  if (o.loggedIn) {
     const info = document.createElement('div');
     info.className = 'oauth-info';
     info.innerHTML = `
@@ -1422,59 +1411,7 @@ function renderOauthStatus() {
       </div>`;
     box.appendChild(info);
     $('#btnOauthRefresh')?.addEventListener('click', refreshOauth);
-    $('#btnOauthLogout')?.addEventListener('click', () => logoutOauthAccount(''));
-
-    // 账号列表（多账号切换入口；即使只有 1 个账号也显示，便于再登录其他账号）
-    if (accounts.length) {
-      const listBox = document.createElement('div');
-      listBox.className = 'oauth-accounts';
-      const title = document.createElement('div');
-      title.className = 'oauth-accounts-title';
-      title.textContent = '已登录账号（可再登录其他账号后随时切换，各账号登录态各自保留）：';
-      listBox.appendChild(title);
-      accounts.forEach((acc) => {
-        const isActive = acc.key && acc.key === o.activeId;
-        const row = document.createElement('div');
-        row.className = 'oauth-account-row' + (isActive ? ' active' : '');
-        const label = acc.email || acc.accountName || acc.accountId || acc.key;
-        const nameEl = document.createElement('span');
-        nameEl.className = 'oauth-account-name';
-        nameEl.textContent = (isActive ? '✅ ' : '') + label + (isActive ? '（当前）' : '');
-        row.appendChild(nameEl);
-        if (!isActive) {
-          const sw = document.createElement('button');
-          sw.type = 'button';
-          sw.className = 'btn ghost';
-          sw.textContent = '切换';
-          sw.style.cssText = 'font-size:12px;padding:4px 10px;margin-left:8px';
-          sw.addEventListener('click', () => switchOauth(acc.key));
-          row.appendChild(sw);
-        }
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'btn ghost danger-ghost';
-        del.textContent = '退出';
-        del.style.cssText = 'font-size:12px;padding:4px 10px;margin-left:6px';
-        del.addEventListener('click', () => logoutOauthAccount(acc.key));
-        row.appendChild(del);
-        listBox.appendChild(row);
-      });
-      if (accounts.length === 1) {
-        const tip = document.createElement('div');
-        tip.className = 'oauth-accounts-tip';
-        tip.textContent = '💡 当前仅登录 1 个账号：点下方「➕ 再登录一个账号」授权另一个 Cloudflare 账号后，即可在此列表随时切换（各账号登录态各自保留）。';
-        listBox.appendChild(tip);
-      }
-      // 常驻「再登录一个账号」按钮（即使已有账号也可继续添加，实现多账号切换）
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button';
-      addBtn.className = 'btn ghost';
-      addBtn.textContent = '➕ 再登录一个账号';
-      addBtn.style.cssText = 'font-size:12px;padding:6px 12px;margin-top:8px;width:100%';
-      addBtn.addEventListener('click', startOauthLogin);
-      listBox.appendChild(addBtn);
-      box.appendChild(listBox);
-    }
+    $('#btnOauthLogout')?.addEventListener('click', logoutOauth);
   } else {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1483,37 +1420,6 @@ function renderOauthStatus() {
     btn.addEventListener('click', startOauthLogin);
     box.appendChild(btn);
   }
-}
-
-/** 切换当前激活的 Cloudflare 账号：切换后实时刷新 Cloudflare 信息与项目列表 */
-async function switchOauth(accountId) {
-  try {
-    const r = await api('/api/oauth/switch', { method: 'POST', body: JSON.stringify({ accountId }) });
-    state.oauth = r.oauth;
-    // 重新拉取全局状态：settings（子域等账号相关信息）+ 项目列表（按账号隔离）
-    await refreshProjects();
-    renderOauthStatus();
-    // 若当前打开的项目不属于新账号，自动切到新账号第一个项目（或空态）
-    const projs = state.projects || [];
-    if (state.project && !projs.some((p) => p.id === state.project.id)) {
-      state.project = null;
-      if (projs.length) await openProject(projs[0].id);
-      else showEmpty();
-    }
-    toast('✅ 已切换到账号：' + ((r.oauth && (r.oauth.email || r.oauth.accountName)) || accountId));
-  } catch (e) { toast(e.message, true); }
-}
-
-/** 退出指定 Cloudflare 账号（空 = 当前账号），其余账号保留 */
-async function logoutOauthAccount(accountId) {
-  const target = accountId || (state.oauth && state.oauth.email) || '当前账号';
-  if (!confirm(`确定退出该 Cloudflare 账号（${target}）？其他已登录账号会保留。`)) return;
-  try {
-    const r = await api('/api/oauth/logout', { method: 'POST', body: JSON.stringify({ accountId }) });
-    state.oauth = r.oauth || { loggedIn: false };
-    renderOauthStatus();
-    toast('已退出该账号');
-  } catch (e) { toast(e.message, true); }
 }
 
 async function startOauthLogin() {
@@ -1574,6 +1480,16 @@ async function refreshOauth() {
     const r = await api('/api/oauth/refresh', { method: 'POST' });
     state.oauth = r.oauth;
     toast('✅ 令牌已刷新');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function logoutOauth() {
+  if (!confirm('确定退出 Cloudflare 在线登录？之后部署将需要重新登录。')) return;
+  try {
+    await api('/api/oauth/logout', { method: 'POST' });
+    state.oauth = { loggedIn: false };
+    renderOauthStatus();
+    toast('已退出登录');
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1739,11 +1655,11 @@ $('#tabImport').addEventListener('click', async () => {
 
 async function loadWorkerList() {
   const sel = $('#impWorkerSelect');
-  if (!sel) return;
-  // 不缓存：切换 Cloudflare 账号后必须按当前账号重新拉取 worker 列表
+  if (!sel || sel.dataset.loaded === '1') return;
   sel.innerHTML = '<option value="">加载中…</option>';
   try {
     const r = await api('/api/workers/list');
+    sel.dataset.loaded = '1';
     if (!r.workers || !r.workers.length) {
       sel.innerHTML = '<option value="">（账号下暂无 Worker，可手动输入）</option>';
       return;
@@ -1763,16 +1679,11 @@ async function loadWorkerList() {
 }
 
 $('#btnImportProject').addEventListener('click', async () => {
-  const btn = $('#btnImportProject');
   const workerName = $('#impWorkerSelect').value || $('#impWorkerName').value.trim();
   if (!workerName) { toast('请选择或输入要关联的 Worker 名称', true); return; }
-  btn.disabled = true;
-  const oldText = btn.textContent;
-  btn.textContent = '关联中…';
   try {
     const res = await api('/api/projects/import', {
       method: 'POST',
-      timeout: 45000,
       body: JSON.stringify({ workerName, name: $('#impName').value.trim() }),
     });
     $('#projectDialog').close();
@@ -1781,12 +1692,7 @@ $('#btnImportProject').addEventListener('click', async () => {
     await refreshProjects();
     await openProject(res.project.id);
     toast('✅ 已关联 Worker：' + workerName);
-  } catch (e) {
-    toast(e.message || '关联失败（可能 Worker 不在当前账号下或名称错误）', true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = oldText;
-  }
+  } catch (e) { toast(e.message, true); }
 });
 $('#btnSettings').addEventListener('click', openSettings);
 $('#setExecutor').addEventListener('change', syncExecutorBlocks);

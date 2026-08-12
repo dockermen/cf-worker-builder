@@ -4,8 +4,7 @@
  * 数据模型：
  * - settings           => { openaiBaseUrl, openaiKey, openaiModel, cfToken, cfAccountId, cfSubdomain }
  * - oauth_device       => { clientId, deviceCode, expiresAt, interval }（进行中的设备码登录）
- * - cf_oauth_accounts  => { accountId: oauth, ... }（在线登录态，多账号各自保留）
- * - cf_oauth_active    => 当前激活账号 key
+ * - cf_oauth           => { clientId, accessToken, refreshToken, expiresAt, accountId, accountName, email }（在线登录态）
  * - projects           => [{ id, name, workerName, url, deployed, updatedAt }]（项目列表索引）
  * - project:{id}       => 完整项目（含代码与对话历史）
  */
@@ -47,7 +46,6 @@ export function makeStore(kv) {
         workerName: project.workerName,
         url: project.url || '',
         deployed: !!project.deployed,
-        ownerKey: project.ownerKey || '', // 账号隔离：列表索引也带归属，过滤才准确
         updatedAt: project.updatedAt || Date.now(),
       };
       const idx = list.findIndex((p) => p.id === project.id);
@@ -137,96 +135,18 @@ export function makeStore(kv) {
       await kv.delete('oauth_device');
     },
 
-    /**
-     * 已登录的 Cloudflare OAuth 账号（多账号，切换登录时各自保留）
-     * - cf_oauth_accounts => { accountId: oauth, ... }（多账号，key 为 accountId 或 email）
-     * - cf_oauth_active   => 当前激活账号的 key
-     * 兼容旧单账号接口：getOAuth 返回当前激活账号；saveOAuth 存入多账号并激活；
-     * clearOAuth 清空全部（退出所有账号）。
-     */
-    async getOAuthAccounts() {
-      let raw = await kv.get('cf_oauth_accounts', 'json');
-      if (!raw || typeof raw !== 'object' || !Object.keys(raw).length) {
-        // 兼容迁移：旧的单账号 cf_oauth 数据并入多账号结构，避免升级后登录态丢失
-        const old = await kv.get('cf_oauth', 'json');
-        if (old && old.accessToken) {
-          const key = old.accountId || old.email || 'default';
-          raw = { [key]: old };
-          await this.saveOAuthAccounts(raw);
-          await this.setActiveOAuthId(key);
-          await kv.delete('cf_oauth');
-        }
-      }
-      return raw && typeof raw === 'object' ? raw : {};
-    },
-
-    async saveOAuthAccounts(accounts) {
-      await kv.put('cf_oauth_accounts', JSON.stringify(accounts));
-    },
-
-    async getActiveOAuthId() {
-      return (await kv.get('cf_oauth_active')) || '';
-    },
-
-    async setActiveOAuthId(id) {
-      await kv.put('cf_oauth_active', id || '');
-    },
-
+    /** 已登录的 OAuth 凭据（access/refresh token 等） */
     async getOAuth() {
-      const accounts = await this.getOAuthAccounts();
-      const activeId = await this.getActiveOAuthId();
-      return accounts[activeId] || null;
+      const raw = await kv.get('cf_oauth', 'json');
+      return raw || null;
     },
 
     async saveOAuth(oauth) {
-      const accounts = await this.getOAuthAccounts();
-      const key = oauth.accountId || oauth.email || 'default';
-      accounts[key] = oauth;
-      await this.saveOAuthAccounts(accounts);
-      await this.setActiveOAuthId(key);
+      await kv.put('cf_oauth', JSON.stringify(oauth));
     },
 
     async clearOAuth() {
-      await this.saveOAuthAccounts({});
-      await this.setActiveOAuthId('');
-    },
-
-    /** 所有已登录账号（用于切换展示） */
-    async listOAuthAccounts() {
-      return Object.values(await this.getOAuthAccounts());
-    },
-
-    /** 更新指定账号的凭据（不切换当前激活账号，用于刷新项目归属账号的 token） */
-    async updateOAuthAccount(accountId, oauth) {
-      const accounts = await this.getOAuthAccounts();
-      if (accounts[accountId]) {
-        accounts[accountId] = oauth;
-        await this.saveOAuthAccounts(accounts);
-      }
-      return accounts[accountId] || null;
-    },
-
-    /** 移除指定账号；若移除的是当前账号，自动切换到剩余的第一个 */
-    async removeOAuthAccount(id) {
-      const accounts = await this.getOAuthAccounts();
-      delete accounts[id];
-      await this.saveOAuthAccounts(accounts);
-      const activeId = await this.getActiveOAuthId();
-      if (activeId === id) {
-        const next = Object.keys(accounts)[0] || '';
-        await this.setActiveOAuthId(next);
-      }
-      return Object.values(accounts);
-    },
-
-    /** 切换当前激活账号 */
-    async switchOAuthAccount(id) {
-      const accounts = await this.getOAuthAccounts();
-      if (accounts[id]) {
-        await this.setActiveOAuthId(id);
-        return true;
-      }
-      return false;
+      await kv.delete('cf_oauth');
     },
   };
 }
