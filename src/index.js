@@ -373,6 +373,15 @@ async function handleApi(request, url, env, store) {
     const body = await readBody();
     try {
       const oauth = await switchOAuth(store, String(body.accountId || ''));
+      // 切换后立即获取新账号的 workers.dev 子域并缓存（失败不阻塞，部署时会再取）
+      let subdomain = '';
+      try {
+        const settings = await store.getSettings();
+        const cred = await getCredentials(store, settings);
+        subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
+      } catch (subErr) {
+        console.error('[oauth/switch] 子域缓存失败:', subErr && subErr.message);
+      }
       const accounts = await store.listOAuthAccounts();
       const activeId = await store.getActiveOAuthId();
       return json({
