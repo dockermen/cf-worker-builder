@@ -375,12 +375,19 @@ async function handleApi(request, url, env, store) {
       const oauth = await switchOAuth(store, String(body.accountId || ''));
       // 切换后立即获取新账号的 workers.dev 子域并缓存（失败不阻塞，部署时会再取）
       let subdomain = '';
+      let subErrMsg = '';
       try {
         const settings = await store.getSettings();
         const cred = await getCredentials(store, settings);
-        subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
+        // 直接查询当前账号子域并按 accountId 缓存（不依赖函数，规避历史版本差异）
+        subdomain = await getAccountSubdomain(cred.token, cred.accountId);
+        const subs = settings.cfSubdomains || {};
+        subs[cred.accountId] = subdomain;
+        settings.cfSubdomains = subs;
+        await store.saveSettings(settings);
       } catch (subErr) {
-        console.error('[oauth/switch] 子域缓存失败:', subErr && subErr.message);
+        subErrMsg = String((subErr && subErr.message) || subErr);
+        console.error('[oauth/switch] 子域缓存失败:', subErrMsg);
       }
       const accounts = await store.listOAuthAccounts();
       const activeId = await store.getActiveOAuthId();
@@ -1520,7 +1527,7 @@ async function smartSmokeTest(url, code) {
  */
 async function getSubdomainForAccount(store, settings, token, accountId) {
   const subs = settings.cfSubdomains || {};
-  if (subs[accountId]) return subs[accountId];
+  if (subs[accountId] && subs[accountId] !== '') return subs[accountId];
   const r = await getAccountSubdomain(token, accountId);
   subs[accountId] = r.subdomain;
   settings.cfSubdomains = subs;
