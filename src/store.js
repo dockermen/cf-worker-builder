@@ -47,6 +47,7 @@ export function makeStore(kv) {
         workerName: project.workerName,
         url: project.url || '',
         deployed: !!project.deployed,
+        ownerKey: project.ownerKey || '', // 账号隔离：列表索引也带归属，过滤才准确
         updatedAt: project.updatedAt || Date.now(),
       };
       const idx = list.findIndex((p) => p.id === project.id);
