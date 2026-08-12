@@ -193,6 +193,7 @@
   .oauth-account-row { display: flex; align-items: center; flex-wrap: wrap; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; margin-bottom: 4px; background: rgba(139,147,167,.06); }
   .oauth-account-row.active { background: rgba(79,140,255,.12); border: 1px solid rgba(79,140,255,.35); }
   .oauth-account-name { flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .oauth-accounts-tip { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
 
   /* ---------- 代码页 ---------- */
   .code-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 10px; }
@@ -1420,13 +1421,13 @@ function renderOauthStatus() {
     $('#btnOauthRefresh')?.addEventListener('click', refreshOauth);
     $('#btnOauthLogout')?.addEventListener('click', () => logoutOauthAccount(''));
 
-    // 多账号列表（切换登录后各账号状态保留，可随时切换回来）
-    if (accounts.length > 1) {
+    // 账号列表（多账号切换入口；即使只有 1 个账号也显示，便于再登录其他账号）
+    if (accounts.length) {
       const listBox = document.createElement('div');
       listBox.className = 'oauth-accounts';
       const title = document.createElement('div');
       title.className = 'oauth-accounts-title';
-      title.textContent = '已登录账号（点击切换，登录态各自保留）：';
+      title.textContent = '已登录账号（可再登录其他账号后随时切换，各账号登录态各自保留）：';
       listBox.appendChild(title);
       accounts.forEach((acc) => {
         const isActive = acc.key && acc.key === o.activeId;
@@ -1455,6 +1456,12 @@ function renderOauthStatus() {
         row.appendChild(del);
         listBox.appendChild(row);
       });
+      if (accounts.length === 1) {
+        const tip = document.createElement('div');
+        tip.className = 'oauth-accounts-tip';
+        tip.textContent = '💡 当前仅登录 1 个账号：再点一次「开始在线登录」授权另一个 Cloudflare 账号后，即可在此列表随时切换（各账号登录态各自保留）。';
+        listBox.appendChild(tip);
+      }
       box.appendChild(listBox);
     }
   } else {
