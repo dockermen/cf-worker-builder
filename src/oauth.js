@@ -174,6 +174,32 @@ export async function logoutOAuth(store, accountId = '') {
   await store.removeOAuthAccount(targetId);
 }
 
+/**
+ * 按指定账号刷新令牌（用于项目归属账号的 token 过期时刷新；不切换当前激活账号）
+ */
+export async function refreshOAuthAccount(store, accountId) {
+  const accounts = await store.getOAuthAccounts();
+  const oauth = accounts[accountId];
+  if (!oauth || !oauth.refreshToken) {
+    throw new Error('该账号没有可用的刷新令牌，请重新登录该账号');
+  }
+  const { res, data } = await postForm(TOKEN_URL, {
+    grant_type: 'refresh_token',
+    refresh_token: oauth.refreshToken,
+    client_id: oauth.clientId,
+  });
+  if (!res.ok || !data.access_token) {
+    throw new Error(
+      `刷新令牌失败（${res.status}）：${JSON.stringify(data).slice(0, 200)}，请重新登录该账号`
+    );
+  }
+  oauth.accessToken = data.access_token;
+  if (data.refresh_token) oauth.refreshToken = data.refresh_token;
+  oauth.expiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+  await store.updateOAuthAccount(accountId, oauth);
+  return oauth;
+}
+
 /** 切换当前激活账号（多账号登录态各自保留） */
 export async function switchOAuth(store, accountId) {
   const ok = await store.switchOAuthAccount(accountId);

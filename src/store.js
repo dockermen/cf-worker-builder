@@ -196,6 +196,16 @@ export function makeStore(kv) {
       return Object.values(await this.getOAuthAccounts());
     },
 
+    /** 更新指定账号的凭据（不切换当前激活账号，用于刷新项目归属账号的 token） */
+    async updateOAuthAccount(accountId, oauth) {
+      const accounts = await this.getOAuthAccounts();
+      if (accounts[accountId]) {
+        accounts[accountId] = oauth;
+        await this.saveOAuthAccounts(accounts);
+      }
+      return accounts[accountId] || null;
+    },
+
     /** 移除指定账号；若移除的是当前账号，自动切换到剩余的第一个 */
     async removeOAuthAccount(id) {
       const accounts = await this.getOAuthAccounts();

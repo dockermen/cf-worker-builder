@@ -24,6 +24,7 @@ import {
   getCredentials,
   publicOAuth,
   switchOAuth,
+  refreshOAuthAccount,
 } from './oauth.js';
 import { login, checkAuth, changePassword } from './auth.js';
 import { extractHttpTest, extractAllHttpTests, executeHttpTest, formatTestResult, formatToolResult, extractRoutes, detectProxyWorker } from './tools.js';
@@ -80,6 +81,33 @@ async function handleApi(request, url, env, store) {
     if (oauth && oauth.accessToken && oauth.accountId) return oauth.accountId;
     if (settings && settings.cfToken) return 'token';
     return '';
+  };
+
+  /**
+   * 获取「项目归属账号」的部署凭据：优先用项目 ownerKey 对应的 OAuth 账号
+   * （token 过期按账号刷新，不切换当前激活账号）；ownerKey 为空（旧项目）或非 OAuth
+   * （手动 token）时回退当前激活账号凭据。
+   */
+  const getCredentialsForOwner = async (settings, ownerKey) => {
+    const accounts = await store.getOAuthAccounts();
+    const oauth = ownerKey && accounts[ownerKey];
+    if (oauth && oauth.accessToken) {
+      let token = oauth.accessToken;
+      if (Date.now() > oauth.expiresAt - 60000) {
+        try {
+          const refreshed = await refreshOAuthAccount(store, ownerKey);
+          token = refreshed.accessToken;
+        } catch (_) {
+          // 刷新失败：沿用旧 token 尝试，若仍不可用由 Cloudflare API 报错
+        }
+      }
+      if (!oauth.accountId) {
+        throw new Error('该账号缺少 Account ID，请重新登录该账号或手动填写 API Token');
+      }
+      return { token, accountId: oauth.accountId, source: 'oauth' };
+    }
+    // ownerKey 为空（旧项目）或手动 Token 模式：回退当前激活账号
+    return getCredentials(store, settings);
   };
 
   /** 项目列表可见性：旧项目（ownerKey 为空）所有账号可见；新项目仅归属账号可见 */
@@ -761,10 +789,10 @@ async function asyncChatAction(request, store, id) {
   await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
   await store.setChatStatus(id, { status: 'running', executor, taskId: '', startedAt: Date.now(), stage: 'preparing', note: '正在准备任务…', updatedAt: Date.now() });
 
-  // 解析 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
+  // 解析「项目归属账号」的 Cloudflare 凭据（OAuth 自动刷新），快照进任务，runner 不依赖构建器登录态
   let cf;
   try {
-    const cred = await getCredentials(store, settings);
+    const cred = await getCredentialsForOwner(settings, project.ownerKey);
     cf = { token: cred.token, accountId: cred.accountId };
     cf.subdomain = await getSubdomainForAccount(store, settings, cf.token, cf.accountId);
   } catch (e) {
@@ -1535,9 +1563,10 @@ async function getSubdomainForAccount(store, settings, token, accountId) {
   return r.subdomain;
 }
 
-/** 执行部署：解析凭据（OAuth 优先，自动刷新）→ 按账号缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
+/** 执行部署：解析「项目归属账号」凭据 → 按账号缓存子域 → 上传脚本 → 存档版本 → 返回访问地址 */
 async function doDeploy(store, settings, project, note) {
-  const cred = await getCredentials(store, settings);
+  // 关键：使用项目归属账号的凭据（ownerKey），避免切换账号后部署到错误账号、URL 子域串用
+  const cred = await getCredentialsForOwner(settings, project.ownerKey);
   const subdomain = await getSubdomainForAccount(store, settings, cred.token, cred.accountId);
   await deployWorker({
     cfToken: cred.token,
