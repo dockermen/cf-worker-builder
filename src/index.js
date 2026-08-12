@@ -435,7 +435,8 @@ async function handleApi(request, url, env, store) {
   }
 
   // ============ 单个项目：GET / DELETE（按账号隔离） ============
-  const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+  // 注意：import 是子路径（/api/projects/import），必须排除，否则会被当成项目 id 走归属校验返回 404
+  const projectMatch = pathname.match(/^\/api\/projects\/(?!import$)([^/]+)$/);
   if (projectMatch) {
     const id = projectMatch[1];
     {

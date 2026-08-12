@@ -1727,11 +1727,11 @@ $('#tabImport').addEventListener('click', async () => {
 
 async function loadWorkerList() {
   const sel = $('#impWorkerSelect');
-  if (!sel || sel.dataset.loaded === '1') return;
+  if (!sel) return;
+  // 不缓存：切换 Cloudflare 账号后必须按当前账号重新拉取 worker 列表
   sel.innerHTML = '<option value="">加载中…</option>';
   try {
     const r = await api('/api/workers/list');
-    sel.dataset.loaded = '1';
     if (!r.workers || !r.workers.length) {
       sel.innerHTML = '<option value="">（账号下暂无 Worker，可手动输入）</option>';
       return;
@@ -1751,11 +1751,16 @@ async function loadWorkerList() {
 }
 
 $('#btnImportProject').addEventListener('click', async () => {
+  const btn = $('#btnImportProject');
   const workerName = $('#impWorkerSelect').value || $('#impWorkerName').value.trim();
   if (!workerName) { toast('请选择或输入要关联的 Worker 名称', true); return; }
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '关联中…';
   try {
     const res = await api('/api/projects/import', {
       method: 'POST',
+      timeout: 45000,
       body: JSON.stringify({ workerName, name: $('#impName').value.trim() }),
     });
     $('#projectDialog').close();
@@ -1764,7 +1769,12 @@ $('#btnImportProject').addEventListener('click', async () => {
     await refreshProjects();
     await openProject(res.project.id);
     toast('✅ 已关联 Worker：' + workerName);
-  } catch (e) { toast(e.message, true); }
+  } catch (e) {
+    toast(e.message || '关联失败（可能 Worker 不在当前账号下或名称错误）', true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
 });
 $('#btnSettings').addEventListener('click', openSettings);
 $('#setExecutor').addEventListener('change', syncExecutorBlocks);
