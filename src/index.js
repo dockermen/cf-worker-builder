@@ -12,7 +12,7 @@
 // GitHub/CNB runner 均在海外或走代理，可正常访问 workers.dev）。
 export const DEFAULT_BUILDER_BASE_URL = 'https://cf-worker-builder.zhilong.workers.dev';
 
-import { json, slugify, extractCode, maskKey, DEFAULT_CODE, pushVersion } from './util.js';
+import { json, slugify, extractCode, maskKey, DEFAULT_CODE, pushVersion, normalizeBaseUrl } from './util.js';
 import { makeStore } from './store.js';
 import { callChatCompletion, streamChatCompletion, SYSTEM_PROMPT } from './agent.js';
 import {
@@ -126,6 +126,44 @@ async function handleApi(request, url, env, store) {
       oauth: publicOAuth(oauth),
       projects,
     });
+  }
+
+  // ============ 探测模型列表（OpenAI 兼容 /models） ============
+  if (pathname === '/api/models' && method === 'GET') {
+    const settings = await store.getSettings();
+    if (!settings.openaiBaseUrl || !settings.openaiKey) {
+      return json({ error: '请先填写 OpenAI Base URL 和 API Key 再获取模型列表' }, 400);
+    }
+    const base = normalizeBaseUrl(settings.openaiBaseUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const res = await fetch(`${base}/models`, {
+        headers: { Authorization: `Bearer ${settings.openaiKey}` },
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json().catch(() => ({}));
+      const models = (Array.isArray(data.data) ? data.data : [])
+        .map((m) => (m && m.id ? String(m.id) : ''))
+        .filter(Boolean)
+        .sort();
+      if (!models.length) throw new Error('返回的模型列表为空');
+      return json({ ok: true, models, count: models.length });
+    } catch (e) {
+      const msg = e && e.name === 'AbortError' ? '请求超时（12 秒）' : String(e.message || '未知错误');
+      return json(
+        {
+          ok: false,
+          error: `模型列表接口不可用：${msg}（该服务商可能未开放 /models 接口，请手动填写模型名称）`,
+        },
+        200
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // ============ 设置（LLM + 手动 Cloudflare Token） ============

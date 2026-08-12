@@ -450,7 +450,10 @@
       <input id="setKey" type="password" placeholder="sk-..." autocomplete="off" />
     </label>
     <label>模型
-      <input id="setModel" list="modelPresets" placeholder="deepseek-chat" />
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="setModel" list="modelPresets" placeholder="deepseek-chat（可手动填写或获取列表选择）" style="flex:1" />
+        <button id="btnFetchModels" type="button" class="btn ghost" style="white-space:nowrap;flex-shrink:0;padding:9px 12px">↻ 获取列表</button>
+      </div>
       <datalist id="modelPresets">
         <option value="deepseek-chat"></option>
         <option value="deepseek-reasoner"></option>
@@ -459,6 +462,7 @@
         <option value="moonshot-v1-8k"></option>
         <option value="glm-4-flash"></option>
       </datalist>
+      <span id="modelListHint" class="muted" style="font-size:12px;color:var(--muted)"></span>
     </label>
     <label>接口类型
       <select id="setApiType" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 12px;font-size:13px;outline:none">
@@ -1494,6 +1498,34 @@ async function logoutOauth() {
   } catch (e) { toast(e.message, true); }
 }
 
+/** 获取 OpenAI 兼容服务商的模型列表（GET /models）；未开放接口时提示手动填写 */
+async function fetchModels() {
+  const btn = $('#btnFetchModels');
+  const hint = $('#modelListHint');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = '获取中…';
+  hint.textContent = '';
+  try {
+    const res = await api('/api/models', { timeout: 30000 });
+    if (res.ok && res.models && res.models.length) {
+      const dl = $('#modelPresets');
+      dl.innerHTML = res.models.map((m) => `<option value="${esc(m)}"></option>`).join('');
+      hint.textContent = `✅ 获取到 ${res.count || res.models.length} 个模型：可下拉选择或手动输入`;
+      toast(`✅ 获取到 ${res.count || res.models.length} 个模型`);
+    } else {
+      hint.textContent = '⚠️ ' + (res.error || '未开放模型列表接口，请手动填写模型名称');
+      toast(res.error || '获取失败，请手动填写模型名称', true);
+    }
+  } catch (e) {
+    hint.textContent = '⚠️ 获取失败：' + e.message + '（可手动填写模型名称）';
+    toast('获取模型列表失败：' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ 获取列表';
+  }
+}
+
 async function saveSettings() {
   const body = {
     openaiBaseUrl: $('#setBaseUrl').value.trim(),
@@ -1664,6 +1696,7 @@ $('#btnSettings').addEventListener('click', openSettings);
 $('#setExecutor').addEventListener('change', syncExecutorBlocks);
 $('#btnCreateProject').addEventListener('click', createProject);
 $('#btnSaveSettings').addEventListener('click', saveSettings);
+$('#btnFetchModels').addEventListener('click', fetchModels);
 $('#btnTestCf').addEventListener('click', testCf);
 
 $('#btnOauthClose').addEventListener('click', () => { stopOauthPoll(); $('#oauthDialog').close(); });
