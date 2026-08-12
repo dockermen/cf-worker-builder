@@ -71,6 +71,29 @@ async function handleApi(request, url, env, store) {
     }
   };
 
+  /**
+   * 当前账号归属 key：OAuth 激活账号的 accountId（同一邮箱授权不同空间时以 accountId 区分）；
+   * 手动 API Token 模式为 'token'；未配置任何凭据返回 ''。
+   */
+  const currentOwnerKey = async (settings) => {
+    const oauth = await store.getOAuth();
+    if (oauth && oauth.accessToken && oauth.accountId) return oauth.accountId;
+    if (settings && settings.cfToken) return 'token';
+    return '';
+  };
+
+  /** 项目列表可见性：旧项目（ownerKey 为空）所有账号可见；新项目仅归属账号可见 */
+  const visibleProjects = (list, ownerKey) => (list || []).filter((p) => !p.ownerKey || p.ownerKey === ownerKey);
+
+  /** 校验项目归属：返回 { ok, project? }；归属不符视为不存在（404），兼容旧项目 */
+  const assertProjectOwner = async (id, settings) => {
+    const project = await store.getProject(id);
+    if (!project) return { ok: false, status: 404 };
+    const ownerKey = await currentOwnerKey(settings);
+    if (project.ownerKey && project.ownerKey !== ownerKey) return { ok: false, status: 404 };
+    return { ok: true, project };
+  };
+
   // ============ 访问密码 ============
   if (pathname === '/api/auth/login' && method === 'POST') {
     const body = await readBody();
@@ -94,6 +117,7 @@ async function handleApi(request, url, env, store) {
   if (pathname === '/api/state' && method === 'GET') {
     const settings = await store.getSettings();
     const projects = await store.listProjects();
+    const ownerKey = await currentOwnerKey(settings);
     const oauth = await store.getOAuth();
     const oauthAccounts = await store.listOAuthAccounts();
     const activeOAuthId = await store.getActiveOAuthId();
@@ -136,7 +160,8 @@ async function handleApi(request, url, env, store) {
           accountName: a.accountName || '',
         })),
       },
-      projects,
+      // 账号隔离：只返回当前账号（或手动 Token）归属的项目；旧项目（无 ownerKey）对所有账号可见
+      projects: visibleProjects(projects, ownerKey),
     });
   }
 
@@ -366,9 +391,11 @@ async function handleApi(request, url, env, store) {
     }
   }
 
-  // ============ 项目列表 ============
+  // ============ 项目列表（按账号隔离） ============
   if (pathname === '/api/projects' && method === 'GET') {
-    return json({ projects: await store.listProjects() });
+    const settings = await store.getSettings();
+    const ownerKey = await currentOwnerKey(settings);
+    return json({ projects: visibleProjects(await store.listProjects(), ownerKey) });
   }
 
   // ============ 创建项目 ============
@@ -380,11 +407,14 @@ async function handleApi(request, url, env, store) {
     const id = crypto.randomUUID();
     const workerName = `${slugify(name)}-${id.slice(0, 4)}`;
     const now = Date.now();
+    const settings = await store.getSettings();
+    const ownerKey = await currentOwnerKey(settings);
     const project = {
       id,
       name,
       description: String(body.description || '').trim(),
       workerName,
+      ownerKey, // 归属当前 Cloudflare 账号（accountId）；手动 Token 模式为 'token'
       source: 'created', // created=构建器创建，linked=关联已有 Worker
       code: DEFAULT_CODE,
       url: '',
@@ -404,10 +434,14 @@ async function handleApi(request, url, env, store) {
     return json({ project });
   }
 
-  // ============ 单个项目：GET / DELETE ============
+  // ============ 单个项目：GET / DELETE（按账号隔离） ============
   const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch) {
     const id = projectMatch[1];
+    {
+      const guard = await assertProjectOwner(id, await store.getSettings());
+      if (!guard.ok) return json({ error: '项目不存在' }, 404);
+    }
     if (method === 'GET') {
       const project = await store.getProject(id);
       if (!project) return json({ error: '项目不存在' }, 404);
@@ -470,11 +504,13 @@ async function handleApi(request, url, env, store) {
     if (!code) return json({ error: '未能获取到该 Worker 的代码' }, 400);
     const id = crypto.randomUUID();
     const now = Date.now();
+    const ownerKey = await currentOwnerKey(settings);
     const project = {
       id,
       name: body.name ? String(body.name).trim() : workerName,
       description: `已关联 Cloudflare Worker：${workerName}（${isModule ? 'ES Module' : 'Service Worker'} 格式）`,
       workerName,
+      ownerKey, // 归属当前账号（accountId / token）
       source: 'linked', // 关联项目：删除时只移除本地，不影响远程 Worker
       code,
       url: '',
@@ -522,7 +558,9 @@ async function handleApi(request, url, env, store) {
   // ============ 项目版本控制 ============
   const versionsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions$/);
   if (versionsMatch && method === 'GET') {
-    const project = await store.getProject(versionsMatch[1]);
+    const guard = await assertProjectOwner(versionsMatch[1], await store.getSettings());
+    if (!guard.ok) return json({ error: '项目不存在' }, 404);
+    const project = guard.project;
     if (!project) return json({ error: '项目不存在' }, 404);
     const versions = (project.versions || []).slice().reverse(); // 新版在前
     return json({ versions, nextVersion: project.nextVersion || 1 });
@@ -530,7 +568,9 @@ async function handleApi(request, url, env, store) {
 
   const versionMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/(\d+)(?:\/restore)?$/);
   if (versionMatch && (method === 'GET' || method === 'POST')) {
-    const project = await store.getProject(versionMatch[1]);
+    const guard = await assertProjectOwner(versionMatch[1], await store.getSettings());
+    if (!guard.ok) return json({ error: '项目不存在' }, 404);
+    const project = guard.project;
     if (!project) return json({ error: '项目不存在' }, 404);
     const v = Number(versionMatch[2]);
     const ver = (project.versions || []).find((x) => x.v === v);
@@ -567,7 +607,9 @@ async function handleApi(request, url, env, store) {
   // ============ 版本打 tag（标记版本永久保留，不受数量上限限制） ============
   const tagMatch = pathname.match(/^\/api\/projects\/([^/]+)\/versions\/(\d+)\/tag$/);
   if (tagMatch && method === 'POST') {
-    const project = await store.getProject(tagMatch[1]);
+    const guard = await assertProjectOwner(tagMatch[1], await store.getSettings());
+    if (!guard.ok) return json({ error: '项目不存在' }, 404);
+    const project = guard.project;
     if (!project) return json({ error: '项目不存在' }, 404);
     const v = Number(tagMatch[2]);
     const ver = (project.versions || []).find((x) => x.v === v);
@@ -582,12 +624,16 @@ async function handleApi(request, url, env, store) {
   // ============ 对话进行中状态查询 ============
   const statusMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status$/);
   if (statusMatch && method === 'GET') {
+    const guard = await assertProjectOwner(statusMatch[1], await store.getSettings());
+    if (!guard.ok) return json({ error: '项目不存在' }, 404);
     const status = await store.getChatStatus(statusMatch[1]);
     return json({ status });
   }
   // 手动结束卡死的后台任务（执行器挂了但状态未清时，前端提供「结束等待」按钮）
   const statusClearMatch = pathname.match(/^\/api\/projects\/([^/]+)\/chat-status\/clear$/);
   if (statusClearMatch && method === 'POST') {
+    const guard = await assertProjectOwner(statusClearMatch[1], await store.getSettings());
+    if (!guard.ok) return json({ error: '项目不存在' }, 404);
     await store.clearChatStatus(statusClearMatch[1]);
     return json({ ok: true });
   }
@@ -597,6 +643,10 @@ async function handleApi(request, url, env, store) {
   if (actionMatch) {
     const id = actionMatch[1];
     const action = actionMatch[2];
+    {
+      const guard = await assertProjectOwner(id, await store.getSettings());
+      if (!guard.ok) return json({ error: '项目不存在' }, 404);
+    }
 
     if (action === 'chat' && method === 'POST') {
       return await chatAction(request, store, id);
