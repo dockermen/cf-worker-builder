@@ -451,20 +451,12 @@
     </label>
     <label>模型
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input id="setModel" list="modelPresets" placeholder="deepseek-chat（可手动填写）" style="flex:1;min-width:160px" />
-        <select id="modelSelect" style="flex:1;min-width:140px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 10px;font-size:13px;outline:none">
-          <option value="">— 选择模型（点此下拉）—</option>
+        <input id="setModel" placeholder="deepseek-chat（可手动填写；也可点右侧获取列表后下拉选择）" style="flex:1;min-width:160px" />
+        <select id="modelSelect" class="hidden" style="flex:1;min-width:160px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 10px;font-size:13px;outline:none">
+          <option value="">— 选择模型 —</option>
         </select>
         <button id="btnFetchModels" type="button" class="btn ghost" style="white-space:nowrap;flex-shrink:0;padding:9px 12px">↻ 获取列表</button>
       </div>
-      <datalist id="modelPresets">
-        <option value="deepseek-chat"></option>
-        <option value="deepseek-reasoner"></option>
-        <option value="gpt-4o-mini"></option>
-        <option value="gpt-4.1-mini"></option>
-        <option value="moonshot-v1-8k"></option>
-        <option value="glm-4-flash"></option>
-      </datalist>
       <span id="modelListHint" class="muted" style="font-size:12px;color:var(--muted)"></span>
     </label>
     <label>接口类型
@@ -1512,14 +1504,16 @@ async function fetchModels() {
   try {
     const res = await api('/api/models', { timeout: 30000 });
     if (res.ok && res.models && res.models.length) {
-      const dl = $('#modelPresets');
-      dl.innerHTML = res.models.map((m) => `<option value="${esc(m)}"></option>`).join('');
       const sel = $('#modelSelect');
-      sel.innerHTML = '<option value="">— 选择模型 —</option>' + res.models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
-      // 若当前输入框的值在列表中，默认选中
+      sel.innerHTML =
+        '<option value="__manual__">✏️ 手动输入模型名称…</option>' +
+        res.models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+      // 切换为下拉选择框（当前输入框的值同步到下拉）
       const cur = $('#setModel').value.trim();
-      if (cur && res.models.includes(cur)) sel.value = cur;
-      hint.textContent = `✅ 获取到 ${res.count || res.models.length} 个模型：从下拉选择，或手动输入`;
+      sel.value = cur && res.models.includes(cur) ? cur : '';
+      $('#setModel').classList.add('hidden');
+      sel.classList.remove('hidden');
+      hint.textContent = `✅ 获取到 ${res.count || res.models.length} 个模型：下拉选择；或选「✏️ 手动输入模型名称…」手动填写`;
       toast(`✅ 获取到 ${res.count || res.models.length} 个模型`);
     } else {
       hint.textContent = '⚠️ ' + (res.error || '未开放模型列表接口，请手动填写模型名称');
@@ -1707,6 +1701,14 @@ $('#btnSaveSettings').addEventListener('click', saveSettings);
 $('#btnFetchModels').addEventListener('click', fetchModels);
 $('#modelSelect').addEventListener('change', function () {
   const v = this.value;
+  if (v === '__manual__') {
+    // 切回可编辑输入框
+    $('#setModel').classList.remove('hidden');
+    this.classList.add('hidden');
+    this.value = '';
+    $('#setModel').focus();
+    return;
+  }
   if (v) $('#setModel').value = v;
 });
 $('#btnTestCf').addEventListener('click', testCf);
