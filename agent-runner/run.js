@@ -24,6 +24,8 @@
 import http from 'node:http';
 import https from 'node:https';
 import dns from 'node:dns/promises';
+import { execFile } from 'node:child_process';
+import path from 'node:path';
 import { callChatCompletion } from '../src/agent.js';
 import { extractCode } from '../src/util.js';
 import { extractAllHttpTests, executeHttpTest, formatToolResult, formatTestResult, extractRoutes, detectProxyWorker, parseHttpTestSpec } from '../src/tools.js';
@@ -253,6 +255,60 @@ async function callLLMWithBeat(settings, messages) {
   }
 }
 
+/** 从回复中提取 deploy-repo 工具块（部署第三方 GitHub Worker 项目） */
+function extractDeployRepo(text) {
+  const m = String(text || '').match(/```deploy-repo\s*\n([\s\S]*?)```/i);
+  if (!m) return null;
+  const spec = m[1];
+  const repo = ((spec.match(/repo\s*[:：]\s*(\S+)/i) || [])[1] || '').trim();
+  const ref = ((spec.match(/ref\s*[:：]\s*(\S+)/i) || [])[1] || '').trim() || 'main';
+  if (!repo) return null;
+  let r = String(repo).replace(/^https?:\/\/(www\.)?github\.com\//i, '').replace(/\/$/, '');
+  if (r.endsWith('.git')) r = r.slice(0, -4);
+  return { repo: r, ref };
+}
+
+/** 在后台执行器容器中运行 deploy-repo.sh（clone → install → build → D1/DO → wrangler deploy） */
+async function runDeployRepo(spec, cf) {
+  const runnerDir = path.dirname(new URL(import.meta.url).pathname);
+  const env = {
+    ...process.env,
+    CF_TOKEN: cf.token,
+    CF_ACCOUNT_ID: cf.accountId,
+    CLASH_PROXY: CLASH_PROXY || '',
+  };
+  return new Promise((resolve) => {
+    execFile(
+      'bash',
+      [path.join(runnerDir, 'deploy-repo.sh'), spec.repo, spec.ref],
+      { env, timeout: 900000, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        const out = String(stdout || '') + String(stderr || '');
+        const urlMatch =
+          out.match(/https:\/\/[a-z0-9-]+\.(?:[a-z0-9-]+\.)?workers\.dev[^\s"'<]*/i) ||
+          out.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+[^\s"'<]*/i);
+        const ok = !err || /Successfully deployed|Deployed|Uploaded.*deploy/i.test(out);
+        resolve({
+          ok,
+          repo: spec.repo,
+          ref: spec.ref,
+          url: urlMatch ? urlMatch[0] : '',
+          log: out.split('\n').filter(Boolean).slice(-30).join('\n'),
+        });
+      }
+    );
+  });
+}
+
+/** 格式化 deploy-repo 结果为对话回填消息 */
+function formatDeployRepoResult(r) {
+  if (!r) return '';
+  if (r.ok || r.url) {
+    return `🚀 已通过后台执行器部署 GitHub 项目 ${r.repo}${r.url ? `：${r.url}` : ''}\n\`\`\`log\n${r.log}\n\`\`\``;
+  }
+  return `🚀 GitHub 项目 ${r.repo} 部署失败（可能依赖/绑定未满足）：\n\`\`\`log\n${r.log}\n\`\`\``;
+}
+
 /**
  * 智能冒烟测试：探测代码中的路由，找到第一个正常响应（与构建器逻辑一致）。
  * - 部署后等待 3 秒（Cloudflare 边缘传播），404/5xx/网络错误最多重试 3 次；
@@ -309,7 +365,8 @@ async function main() {
     log(`第 ${round + 1} 轮完成，输出 ${reply.length} 字`);
 
     const specs = extractAllHttpTests(reply);
-    if (!specs.length) break;
+    const deployRepoSpec = extractDeployRepo(reply);
+    if (!specs.length && !deployRepoSpec) break;
 
     for (const spec of specs) {
       const parsedSpec = parseHttpTestSpec(spec);
@@ -365,6 +422,24 @@ async function main() {
       toolResults.push(r);
       messages.push({ role: 'system', content: formatToolResult(r, toolResults.length) });
       log('工具结果:', r.status || r.error, r.url || '');
+    }
+
+    // deploy-repo：后台执行器容器内克隆/构建/部署第三方 GitHub Worker 项目（如 ternssh）
+    if (deployRepoSpec) {
+      await reportProgress({
+        stage: 'tool',
+        round: round + 1,
+        note: `正在后台执行器部署 GitHub 项目：${deployRepoSpec.repo}（clone→install→build→wrangler deploy）…`,
+      });
+      log('检测到 deploy-repo 工具:', deployRepoSpec.repo, '@', deployRepoSpec.ref);
+      try {
+        const dr = await runDeployRepo(deployRepoSpec, task.cf);
+        log('deploy-repo 结果:', dr.ok ? '成功' : '失败', dr.url || '');
+        messages.push({ role: 'system', content: formatDeployRepoResult(dr) });
+      } catch (e) {
+        log('deploy-repo 执行异常:', e && e.message);
+        messages.push({ role: 'system', content: `🚀 GitHub 项目部署异常：${e && e.message ? e.message : e}` });
+      }
     }
 
     if (round >= maxRounds - 1) {
