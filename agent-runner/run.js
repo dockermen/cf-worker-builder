@@ -268,6 +268,21 @@ function extractDeployRepo(text) {
   return { repo: r, ref };
 }
 
+/**
+ * 兜底：Agent 忘记输出 deploy-repo 块时，从回复中自动识别「部署 GitHub 项目」意图。
+ * 命中条件：回复含 github.com/owner/repo URL 且（回复或用户消息）含 部署/deploy/后台执行 等意图词。
+ */
+function autoDetectDeployRepo(reply, userMessage) {
+  const text = String(reply || '');
+  const urlM = text.match(/https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/i);
+  if (!urlM) return null;
+  const intent = /部署|deploy|提交到后台|后台执行|deploy-repo|构建部署/i.test(text + ' ' + String(userMessage || ''));
+  if (!intent) return null;
+  let repo = urlM[0].replace(/^https?:\/\/(www\.)?github\.com\//i, '').replace(/\/$/, '');
+  if (repo.endsWith('.git')) repo = repo.slice(0, -4);
+  return { repo, ref: 'main' };
+}
+
 /** 在后台执行器容器中运行 deploy-repo.sh（clone → install → build → D1/DO → wrangler deploy） */
 async function runDeployRepo(spec, cf) {
   const runnerDir = path.dirname(new URL(import.meta.url).pathname);
@@ -365,7 +380,15 @@ async function main() {
     log(`第 ${round + 1} 轮完成，输出 ${reply.length} 字`);
 
     const specs = extractAllHttpTests(reply);
-    const deployRepoSpec = extractDeployRepo(reply);
+    let deployRepoSpec = extractDeployRepo(reply);
+    if (!specs.length && !deployRepoSpec) {
+      // 兜底：Agent 只文字描述部署意图但未输出 deploy-repo 块时自动触发
+      const auto = autoDetectDeployRepo(reply, task.userMessage);
+      if (auto) {
+        log('未检测到 deploy-repo 代码块，但回复含部署意图的 GitHub 仓库，自动触发:', auto.repo);
+        deployRepoSpec = auto;
+      }
+    }
     if (!specs.length && !deployRepoSpec) break;
 
     for (const spec of specs) {
