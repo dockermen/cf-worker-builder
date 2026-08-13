@@ -6,6 +6,7 @@ set -e
 REPO="$1"
 REF="${2:-main}"
 [ -z "$REPO" ] && { echo "!! 缺少仓库参数"; exit 2; }
+echo ">> 执行器环境: Node $(node -v) | npm $(npm -v) | git $(git --version | awk '{print $3}')"
 
 # Clash 代理（CNB 场景）：git/npm/wrangler 走代理；GitHub 直连优先由用户网络决定
 if [ -n "$CLASH_PROXY" ]; then

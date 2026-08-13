@@ -25,7 +25,7 @@
 main:
   api_trigger_builder:
     - docker:
-        image: node:20
+        image: node:22
         volumes:
           - /root/.npm:copy-on-write
       stages:
