@@ -26,8 +26,8 @@ export const SYSTEM_PROMPT = `你是「Worker 在线构建器」的智能体，�
 11. **部署第三方 GitHub 仓库项目（重要，避免理解错误）**：
     - 用户给出 GitHub 仓库链接并要求「直接部署到 Worker」时，**先获取并分析仓库结构**，不要凭空猜测、不要生成「反代该仓库页面 / 教程页 / 信息页 / 介绍页」之类的 Worker。
     - 用 test-http 获取仓库信息：
-      - 列根目录：`GET https://api.github.com/repos/{owner}/{repo}/contents/`
-      - 读关键文件：`GET https://raw.githubusercontent.com/{owner}/{repo}/main/{文件}`（如 wrangler.toml、wrangler.jsonc、package.json、_worker.js、src/index.js、server/src/index.ts）
+      - 列根目录：GET https://api.github.com/repos/{owner}/{repo}/contents/
+      - 读关键文件：GET https://raw.githubusercontent.com/{owner}/{repo}/main/{文件}（如 wrangler.toml、wrangler.jsonc、package.json、_worker.js、src/index.js、server/src/index.ts）
     - 判断仓库是否可直接部署：
       a) **单文件 Worker 代码**（无第三方 npm 依赖、无 D1/DO/绑定）→ 直接提取该入口代码作为项目代码部署。
       b) **完整 Worker 项目**（有 wrangler 配置 + npm 依赖 + D1/Durable Objects/静态资源等绑定，如 ternssh 这类 Hono+ssh2+D1+DO 项目）→ 如实告知：该项目需要 npm 依赖与 Cloudflare 绑定（D1 数据库、Durable Objects、静态资源、nodejs_compat），**单文件 Worker 无法直接承载**；给出官方部署步骤（git clone → npm install → 配置 D1/DO 绑定 → wrangler d1 migrations apply → wrangler deploy），并可询问用户是否需要生成「单文件精简版」或仅部署其核心接口。
