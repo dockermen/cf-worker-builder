@@ -241,6 +241,10 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
 
 ## 📝 更新记录
 
+- **2026-08-14**：v2.6.0 CodeMirror 代码编辑器 + KV 缓存优化（P1 性能优化）
+  - **CodeMirror 代码编辑器**：代码页 textarea 替换为 CodeMirror 5（material-darker 主题），支持 JavaScript 语法高亮、行号、括号匹配、代码折叠（gutter），编辑体验质变
+  - **KV 请求级缓存**：`listProjects()` 同一请求生命周期内只读 KV 一次，后续命中内存缓存；`saveProject`/`deleteProject` 同步更新缓存，流式对话 8 轮工具循环从 16 次 KV 操作降到 9 次
+  - **前端工具函数**：新增 `setEditorCode()` / `getEditorCode()` / `initCodeMirror()` 封装编辑器读写，所有代码引用统一走 API
 - **2026-08-14**：v2.5.0 前端增量渲染 + 冒烟/压缩异步化（P0 性能优化）
   - **增量渲染消息**：`renderProject` 支持 `skipMessages` 参数，对话完成后只刷新元数据（URL/状态/侧边栏），不再全量重建消息 DOM；流式结束时仅重绘最后一条 assistant 消息（streaming 样式 → 正式 markdown 格式），长对话不再卡顿
   - **冒烟测试异步化**：部署结果立即返回（`done` 事件），冒烟测试在 SSE stream 内异步执行并通过 `smoke` 事件推送结果，用户秒收"已部署"反馈（此前需等 3-39 秒）

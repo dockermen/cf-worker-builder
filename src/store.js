@@ -10,6 +10,10 @@
  */
 
 export function makeStore(kv) {
+  // 请求级缓存：同一请求生命周期内 listProjects() 只读 KV 一次，后续命中内存
+  // saveProject/deleteProject 同步更新缓存，避免重复 KV read
+  let _listCache = null;
+
   return {
     async getSettings() {
       const raw = await kv.get('settings', 'json');
@@ -22,11 +26,14 @@ export function makeStore(kv) {
     },
 
     async listProjects() {
+      if (_listCache !== null) return _listCache;
       const raw = await kv.get('projects', 'json');
-      return raw || [];
+      _listCache = raw || [];
+      return _listCache;
     },
 
     async saveProjectList(list) {
+      _listCache = list; // 同步更新缓存
       await kv.put('projects', JSON.stringify(list));
     },
 
