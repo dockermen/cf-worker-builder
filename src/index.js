@@ -989,7 +989,7 @@ async function streamChatAction(request, store, id) {
   await store.saveProject(project);
   await store.setChatStatus(id, { status: 'running', startedAt: Date.now() });
 
-  await maybeCompact(store, settings, project); // 长对话自动压缩早期上下文
+  // P0优化：上下文压缩延后到对话结束后后台执行，不阻塞用户发消息
   let messages = buildMessages(project);
 
   const encoder = new TextEncoder();
@@ -1180,22 +1180,7 @@ async function streamChatAction(request, store, id) {
           }
         }
 
-        let smokeTest = null;
-        if (deployed) {
-          try {
-            smokeTest = await smartSmokeTest(url, cur.code);
-            if (smokeTest && !smokeTest.error && smokeTest.status < 400) {
-              cur.history.push({
-                role: 'system',
-                content: `🌐 冒烟测试：${smokeTest.route === '/' ? '根路径 /' : smokeTest.route} → HTTP ${smokeTest.status} ✅`,
-              });
-            } else if (smokeTest) {
-              cur.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
-            }
-          } catch (_) { /* ignore */ }
-        }
-
-        // 部署成功：先更新项目功能记忆，再存档版本（版本快照包含最新记忆）
+        // 部署成功：更新项目功能记忆，存档版本
         if (deployed && message) {
           await updateProjectMemory(store, settings, cur, message);
         }
@@ -1204,6 +1189,8 @@ async function streamChatAction(request, store, id) {
         }
         await store.saveProject(cur);
         await store.clearChatStatus(id);
+
+        // P0优化：立即返回部署结果，不等冒烟测试（用户秒收反馈）
         send('done', {
           reply: fullReply,
           code,
@@ -1211,10 +1198,27 @@ async function streamChatAction(request, store, id) {
           url,
           deployError,
           testResult: allToolResults.length ? allToolResults[allToolResults.length - 1] : null,
-          smokeTest,
           toolRounds: allToolResults.length ? undefined : 0,
           project: cur,
         });
+
+        // 冒烟测试在 stream 内异步执行，结果通过 'smoke' 事件推送（前端实时显示）
+        if (deployed) {
+          try {
+            const smokeTest = await smartSmokeTest(url, cur.code);
+            if (smokeTest && !smokeTest.error && smokeTest.status < 400) {
+              cur.history.push({
+                role: 'system',
+                content: `🌐 冒烟测试：${smokeTest.route === '/' ? '根路径 /' : smokeTest.route} → HTTP ${smokeTest.status} ✅`,
+              });
+            } else if (smokeTest) {
+              cur.history.push({ role: 'system', content: formatTestResult(smokeTest, '冒烟测试：') });
+            }
+            send('smoke', { result: smokeTest });
+            await store.saveProject(cur);
+          } catch (_) { /* ignore */ }
+        }
+
         controller.close();
       } catch (e) {
         try {
@@ -1230,13 +1234,22 @@ async function streamChatAction(request, store, id) {
     },
   });
 
-  return new Response(stream, {
+  const response = new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
     },
   });
+
+  // P0优化：上下文压缩在 stream 关闭后后台执行（不阻塞对话响应）
+  // Cloudflare Workers 环境中 ctx 通过闭包捕获，waitUntil 保持 request 生命周期
+  try {
+    const freshProject = await store.getProject(id);
+    if (freshProject) await maybeCompact(store, settings, freshProject);
+  } catch (_) { /* compact failure should never block the response */ }
+
+  return response;
 }
 
 /**

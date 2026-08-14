@@ -835,7 +835,7 @@ async function openProject(id) {
   } catch (err) { toast(err.message, true); }
 }
 
-function renderProject(p) {
+function renderProject(p, skipMessages) {
   $('#projectName').textContent = p.name;
   const badge = $('#statusBadge');
   badge.className = 'badge ' + (p.deployed ? 'ok' : 'off');
@@ -871,19 +871,23 @@ function renderProject(p) {
   }
 
   $('#codeEditor').value = p.code || '';
-  renderMessages(p.history || []);
-  scrollBottom();
+  // 增量模式：跳过消息重绘（流式输出/手动追加的消息已直接操作 DOM，无需全量重建）
+  if (!skipMessages) {
+    renderMessages(p.history || []);
+    scrollBottom();
+  }
 }
 
 /* ---------------- 消息渲染 ---------------- */
 
-function renderMarkdown(text) {
+function renderMarkdown(text, collapse) {
   const parts = String(text).split(/```/);
   let html = '';
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 1) {
       let code = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, '');
-      html += `<div class="codeblock collapsed"><div class="codehead"><span>📄 代码（点击展开/折叠）</span>
+      const cls = collapse !== false ? ' collapsed' : '';
+      html += `<div class="codeblock${cls}"><div class="codehead"><span>📄 代码（点击展开/折叠）</span>
         <button type="button" class="copy-btn" data-code="${encodeURIComponent(code)}">复制</button></div>
         <pre><code>${esc(code)}</code></pre></div>`;
     } else {
@@ -982,6 +986,18 @@ function scrollBottom() {
   box.scrollTop = box.scrollHeight;
 }
 
+/** 增量渲染：流式结束后仅重绘最后一条 assistant 消息（streaming 样式 → 正式 markdown 格式） */
+function rerenderLastAssistant() {
+  const msgs = document.querySelectorAll('#messages .msg.assistant');
+  if (!msgs.length) return;
+  const last = msgs[msgs.length - 1];
+  const rawText = last._rawText;
+  if (rawText) {
+    last.classList.remove('streaming');
+    last.innerHTML = renderMarkdown(rawText, true);
+  }
+}
+
 /* ---------------- 对话 ---------------- */
 
 function setBusy(busy) {
@@ -1076,6 +1092,7 @@ async function sendMessage() {
           }
           fullText += payload.text || '';
           assistantEl.innerHTML = renderStreaming(fullText);
+          assistantEl._rawText = fullText; // 缓存原文，流式结束后 rerenderLastAssistant 用
           scrollCodeLatest(assistantEl); // 代码块滚动到最新行
           scrollBottom();
         } else if (event === 'tool') {
@@ -1099,18 +1116,34 @@ async function sendMessage() {
         } else if (event === 'done') {
           typing.remove();
           state.project = payload.project;
-          renderProject(payload.project);
+          // 增量更新：跳过消息重绘（流式内容已在 DOM），仅刷新元数据
+          renderProject(payload.project, true);
+          rerenderLastAssistant();
           renderSidebar();
           const testBits = [];
           if (payload.testResult) {
             testBits.push(payload.testResult.error ? '🔧 ' + payload.testResult.error : '🔧 接口测试 HTTP ' + payload.testResult.status);
           }
-          if (payload.smokeTest) {
-            testBits.push(payload.smokeTest.error ? '🌐 冒烟测试失败' : '🌐 冒烟测试 HTTP ' + payload.smokeTest.status + (payload.smokeTest.status === 404 ? '（根路径无响应，正常）' : ''));
-          }
           if (payload.deployed) toast('✅ 已自动部署：' + payload.url);
           else if (payload.deployError) toast('⚠️ 部署失败：' + payload.deployError, true);
-          else if (testBits.length) toast(testBits.join('  '), (payload.testResult && payload.testResult.error) || (payload.smokeTest && payload.smokeTest.status >= 500));
+          else if (testBits.length) toast(testBits.join('  '), payload.testResult && payload.testResult.error);
+        } else if (event === 'smoke') {
+          // 冒烟测试异步结果（部署后自动推送）
+          const r = payload.result;
+          if (r && !r.error && r.status < 400) {
+            const note = document.createElement('div');
+            note.className = 'msg system ok';
+            note.textContent = '🌐 冒烟测试：' + (r.route === '/' ? '根路径 /' : r.route) + ' → HTTP ' + r.status + ' ✅';
+            $('#messages').appendChild(note);
+            scrollBottom();
+          } else if (r) {
+            const note = document.createElement('div');
+            note.className = 'msg system warn';
+            note.textContent = r.error ? '🌐 冒烟测试失败：' + r.error : '🌐 冒烟测试：HTTP ' + r.status + (r.status === 404 ? '（根路径无响应，正常）' : '');
+            $('#messages').appendChild(note);
+            scrollBottom();
+            if (r.status >= 500) toast('🌐 冒烟测试异常：HTTP ' + r.status, true);
+          }
         } else if (event === 'error') {
           throw new Error(payload.error || '对话出错');
         }
