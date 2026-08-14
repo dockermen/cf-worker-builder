@@ -4,6 +4,14 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27><text y=%27.9em%27 font-size=%2790%27>⚡</text></svg>" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/material-darker.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/fold/foldcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/fold/foldgutter.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/fold/foldgutter.min.css" />
 <title>Worker 在线构建器</title>
 <style>
   :root {
@@ -194,6 +202,22 @@
     flex: 1; width: 100%; background: #0a0d13; color: #c9d4e8; border: none; outline: none;
     font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 16px 18px; resize: none;
   }
+  .code-editor-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .code-editor-wrap .CodeMirror {
+    flex: 1; height: auto; background: #0a0d13; color: #c9d4e8; font-family: var(--mono); font-size: 13px; line-height: 1.6;
+    border: none; padding: 8px 0;
+  }
+  .code-editor-wrap .CodeMirror-gutters { background: #0e1118; border-right: 1px solid var(--border); }
+  .code-editor-wrap .CodeMirror-linenumber { color: #4a5568; font-size: 11px; }
+  .code-editor-wrap .CodeMirror-cursor { border-left-color: var(--accent); }
+  .code-editor-wrap .CodeMirror-selected { background: rgba(79,140,255,.18) !important; }
+  .code-editor-wrap .CodeMirror-activeline-background { background: rgba(79,140,255,.06); }
+  .code-editor-wrap .CodeMirror-foldmarker { color: var(--accent); font-weight: 700; }
+  .code-editor-wrap .CodeMirror-foldgutter { width: 16px; }
+  .code-editor-wrap .CodeMirror-foldgutter-open,
+  .code-editor-wrap .CodeMirror-foldgutter-folded { color: #4a5568; cursor: pointer; }
+  .code-editor-wrap .CodeMirror-foldgutter-open:hover,
+  .code-editor-wrap .CodeMirror-foldgutter-folded:hover { color: var(--accent); }
 
   /* ---------- 弹窗 ---------- */
   dialog {
@@ -459,7 +483,7 @@
           <button id="btnSaveDeploy" class="btn primary">保存并部署</button>
         </div>
       </div>
-      <textarea id="codeEditor" class="code-editor" spellcheck="false"></textarea>
+      <div id="codeEditorWrap" class="code-editor-wrap"><textarea id="codeEditor" spellcheck="false"></textarea></div>
     </div>
   </section>
 </main>
@@ -947,7 +971,7 @@ function renderProject(p, skipMessages) {
     copyBtn.classList.add('hidden');
   }
 
-  $('#codeEditor').value = p.code || '';
+  if (!cmEditor) initCodeMirror(); setEditorCode(p.code || '');
   // 增量模式：跳过消息重绘（流式输出/手动追加的消息已直接操作 DOM，无需全量重建）
   if (!skipMessages) {
     renderMessages(p.history || []);
@@ -1947,7 +1971,7 @@ async function openVersions() {
         </div>`;
       item.querySelector('[data-act="view"]').addEventListener('click', () => {
         // 把版本代码载入编辑器并切换到代码页
-        $('#codeEditor').value = ver.code || '';
+        setEditorCode(ver.code || '');
         $('#versionDialog').close();
         switchView('code');
         toast(`已载入版本 #${ver.v} 代码（未保存）`);
@@ -2070,6 +2094,25 @@ async function initApp() {
   } else {
     showEmpty();
   }
+}
+
+let cmEditor = null;
+function initCodeMirror() {
+  if (cmEditor || typeof CodeMirror === 'undefined') return;
+  cmEditor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
+    mode: 'javascript', theme: 'material-darker', lineNumbers: true, matchBrackets: true,
+    foldGutter: true, gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+    lineWrapping: false, tabSize: 2, indentWithTabs: false, readOnly: false,
+    styleActiveLine: true, viewportMargin: Infinity,
+  });
+}
+function setEditorCode(code) {
+  if (cmEditor) { cmEditor.setValue(code || ''); cmEditor.clearHistory(); }
+  else { const el = document.getElementById('codeEditor'); if (el) el.value = code || ''; }
+}
+function getEditorCode() {
+  if (cmEditor) return cmEditor.getValue();
+  const el = document.getElementById('codeEditor'); return el ? el.value : '';
 }
 
 (async function init() {
