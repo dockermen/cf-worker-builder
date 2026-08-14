@@ -241,6 +241,11 @@ Workers 的同步请求有较短的超时限制（尤其流式 SSE 长对话容�
 
 ## 📝 更新记录
 
+- **2026-08-14**：v2.7.0 骨架屏 + Toast 队列 + 设置页 Tab + 工具卡片动画（P2 体验优化）
+  - **骨架屏**：初始化加载时显示侧边栏+工作区骨架动画（shimmer），消除白屏等待感，认证完成后自动移除
+  - **Toast 队列**：从单条覆盖改为右下角堆叠（最多 5 条），入/出动画（fade+slide），多操作同时反馈不再互相覆盖
+  - **设置页 Tab 化**：四个 Tab（🤖 大模型 / ☁️ Cloudflare / 🚀 执行器 / 🔒 安全），信息分组清晰，新用户不再被满屏配置吓到
+  - **工具卡片折叠动画**：`max-height` + `opacity` + `transition` 平滑展开/收起，替代原来的 `display:none` 硬切
 - **2026-08-14**：v2.6.0 CodeMirror 代码编辑器 + KV 缓存优化（P1 性能优化）
   - **CodeMirror 代码编辑器**：代码页 textarea 替换为 CodeMirror 5（material-darker 主题），支持 JavaScript 语法高亮、行号、括号匹配、代码折叠（gutter），编辑体验质变
   - **KV 请求级缓存**：`listProjects()` 同一请求生命周期内只读 KV 一次，后续命中内存缓存；`saveProject`/`deleteProject` 同步更新缓存，流式对话 8 轮工具循环从 16 次 KV 操作降到 9 次

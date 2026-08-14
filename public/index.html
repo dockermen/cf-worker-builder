@@ -163,15 +163,14 @@
   .msg .codeblock pre { max-height: 280px; overflow: auto; }
   .msg .codeblock.collapsed pre { display: none; }
   /* 工具结果折叠卡片：默认摘要，点击展开详情 */
-  .msg.tool-result { border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); padding: 0; }
-  /* 注意：此处不能用 overflow:hidden —— 在 flex 列容器中会触发高度塌陷（卡片只剩 2px 边框横线） */
+  .msg.tool-result { border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); padding: 0; overflow: hidden; }
   .msg.tool-result .tool-summary:first-child { border-radius: 10px 10px 0 0; }
   .tool-summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; font-size: 13px; color: var(--text); }
   .tool-summary:hover { background: rgba(255,255,255,.04); }
   .tool-toggle { color: var(--accent); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
-  .tool-detail { padding: 2px 12px 10px; }
+  .tool-detail { padding: 2px 12px 10px; max-height: 0; overflow: hidden; opacity: 0; transition: max-height .3s ease, opacity .2s ease, padding .2s ease; padding-top: 0; padding-bottom: 0; }
+  .msg.tool-result.open .tool-detail { max-height: 60vh; opacity: 1; padding: 2px 12px 10px; overflow: auto; }
   .tool-pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; max-height: 55vh; overflow: auto; margin: 6px 0 0; color: var(--muted); }
-  .tool-detail.hidden { display: none; }
   .msg .codehead { cursor: pointer; user-select: none; }
   .msg pre code { font-family: var(--mono); color: #c9d4e8; white-space: pre; }
   .msg code { font-family: var(--mono); font-size: 12.5px; background: rgba(139,147,167,.15); border-radius: 4px; padding: 1px 5px; }
@@ -208,6 +207,18 @@
   .dialog-head .close { background: none; border: none; color: var(--muted); font-size: 15px; }
   .dialog-head .close:hover { color: var(--text); }
   .dialog-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; max-height: 62vh; overflow-y: auto; }
+
+  /* 设置页 Tab */
+  .settings-tabs { display: flex; gap: 4px; padding: 0 20px 0; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .settings-tabs .stab {
+    padding: 10px 14px; font-size: 13px; color: var(--muted); background: transparent; border: none;
+    border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; transition: all .15s;
+  }
+  .settings-tabs .stab:hover { color: var(--text); }
+  .settings-tabs .stab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .settings-panel { display: none; }
+  .settings-panel.active { display: block; }
+
   .dialog-body h4 { font-size: 13px; color: var(--accent); margin: 6px 0 0; letter-spacing: .3px; }
   .dialog-body h4 + * { margin-top: 2px; }
   .dialog-body label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
@@ -221,14 +232,23 @@
   .dialog-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); }
 
   /* ---------- Toast ---------- */
-  .toast {
+  /* Toast 队列：右下角堆叠，支持多条同时显示 */
+  .toast-container {
     position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column-reverse; gap: 8px; z-index: 99;
+    max-width: 85vw; pointer-events: none;
+  }
+  .toast {
     background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-    padding: 10px 20px; border-radius: 10px; font-size: 13px; z-index: 99;
-    box-shadow: 0 10px 40px rgba(0,0,0,.5); max-width: 80vw;
+    padding: 10px 20px; border-radius: 10px; font-size: 13px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); max-width: 100%;
+    animation: toast-in .25s ease-out;
+    pointer-events: auto;
   }
   .toast.error { border-color: rgba(255,93,93,.5); color: #ffb3b3; }
-  .toast.hidden { display: none; }
+  .toast.hiding { animation: toast-out .2s ease-in forwards; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes toast-out { to { opacity: 0; transform: translateY(12px); } }
 
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-thumb { background: #2a3344; border-radius: 6px; }
@@ -251,6 +271,21 @@
   #oauthVerifyUrl { font-size: 12px; color: var(--accent); word-break: break-all; max-width: 100%; }
   #oauthWait { font-size: 13px; color: var(--muted); }
 
+
+  /* ---------- 骨架屏 ---------- */
+  .skeleton-bar {
+    background: linear-gradient(90deg, var(--panel2) 25%, #1e2636 50%, var(--panel2) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    border-radius: 6px;
+    height: 14px;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .skeleton-item { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+  .skeleton-item .skeleton-bar:nth-child(2) { width: 65%; height: 11px; }
+  .skeleton-hero { width: 84px; height: 84px; border-radius: 22px; }
+  .skeleton-title { width: 180px; height: 22px; }
+  .skeleton-subtitle { width: 260px; height: 14px; }
   /* ---------- 访问密码锁屏 ---------- */
   .lock { position: fixed; inset: 0; z-index: 300; background: var(--bg); display: flex; align-items: center; justify-content: center; }
   .lock.hidden { display: none; }
@@ -435,8 +470,15 @@
     <h3>⚙️ 构建器设置</h3>
     <button class="close" value="cancel" aria-label="关闭">✕</button>
   </form>
-  <div class="dialog-body">
-    <h4>① 大模型接入（OpenAI 兼容，支持 DeepSeek 等）</h4>
+  <div class="settings-tabs">
+    <button type="button" class="stab active" data-stab="llm">🤖 大模型</button>
+    <button type="button" class="stab" data-stab="cf">☁️ Cloudflare</button>
+    <button type="button" class="stab" data-stab="runner">🚀 执行器</button>
+    <button type="button" class="stab" data-stab="security">🔒 安全</button>
+  </div>
+  <div class="dialog-body" style="padding-top:14px">
+    <div class="settings-panel active" data-panel="llm">
+    <h4>大模型接入（OpenAI 兼容，支持 DeepSeek 等）</h4>
     <label>Base URL
       <input id="setBaseUrl" list="baseUrlPresets" placeholder="https://api.deepseek.com 或 https://api.openai.com/v1" />
       <datalist id="baseUrlPresets">
@@ -466,8 +508,9 @@
         <option value="responses">responses（OpenAI Responses API）</option>
       </select>
     </label>
-
-    <h4>② Cloudflare（自动发布 Worker）</h4>
+    </div>
+    <div class="settings-panel" data-panel="cf">
+    <h4>Cloudflare（自动发布 Worker）</h4>
     <div class="oauth-card">
       <div>
         <div class="oauth-title">🌐 在线登录（推荐，无需手动创建 Token）</div>
@@ -490,8 +533,9 @@
       🔒 无论哪种方式，凭据都保存在构建器自己的 KV 存储中（在线登录的令牌到期会自动刷新），部署时自动复用。
       API Token 可在 dash.cloudflare.com → 头像 → My Profile → API Tokens → Create Token 创建（模板选「Edit Cloudflare Workers」）。
     </p>
-
-    <h4>④ 后台执行器（解决长对话超时/中断）</h4>
+    </div>
+    <div class="settings-panel" data-panel="runner">
+    <h4>后台执行器（解决长对话超时/中断）</h4>
     <label style="margin:4px 0 10px">执行器
       <select id="setExecutor" style="width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 12px;font-size:13px;outline:none">
         <option value="github">GitHub Actions（推荐，海外 runner 访问 Cloudflare 稳定）</option>
@@ -558,7 +602,9 @@
       </p>
     </div>
 
-    <h4>③ 访问密码（进入构建器页面时需要）</h4>
+    </div>
+    <div class="settings-panel" data-panel="security">
+    <h4>访问密码（进入构建器页面时需要）</h4>
     <label>旧密码
       <input id="setOldPwd" type="password" placeholder="当前访问密码" autocomplete="current-password"
         autocapitalize="off" autocorrect="off" spellcheck="false" style="font-size:16px" />
@@ -569,6 +615,8 @@
     </label>
     <div>
       <button id="btnChangePwd" type="button" class="btn ghost">修改访问密码</button>
+    </div>
+  </div>
     </div>
   </div>
   <div class="dialog-foot">
@@ -662,6 +710,27 @@
 <button id="sidebarToggle" aria-label="展开项目列表">☰</button>
 <div id="sidebarOverlay"></div>
 
+<!-- 骨架屏：初始化加载时显示 -->
+<div id="skeletonScreen" style="display:flex;position:fixed;inset:0;z-index:200;background:var(--bg)">
+  <div style="width:264px;min-width:264px;background:var(--panel);border-right:1px solid var(--border);padding:16px 14px;display:flex;flex-direction:column;gap:16px">
+    <div style="display:flex;align-items:center;gap:10px;padding:2px 4px 10px;border-bottom:1px solid var(--border)">
+      <div class="skeleton-bar skeleton-hero" style="width:38px;height:38px;border-radius:10px"></div>
+      <div style="display:flex;flex-direction:column;gap:6px"><div class="skeleton-bar" style="width:100px"></div><div class="skeleton-bar" style="width:70px;height:10px"></div></div>
+    </div>
+    <div class="skeleton-bar" style="width:100%;height:36px;border-radius:8px"></div>
+    <div style="flex:1;display:flex;flex-direction:column;gap:8px">
+      <div class="skeleton-item"><div class="skeleton-bar" style="width:70%"></div><div class="skeleton-bar" style="width:50%"></div></div>
+      <div class="skeleton-item"><div class="skeleton-bar" style="width:55%"></div><div class="skeleton-bar" style="width:40%"></div></div>
+      <div class="skeleton-item"><div class="skeleton-bar" style="width:80%"></div><div class="skeleton-bar" style="width:60%"></div></div>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px">
+    <div class="skeleton-bar skeleton-hero" style="width:84px;height:84px;border-radius:22px"></div>
+    <div class="skeleton-bar skeleton-title"></div>
+    <div class="skeleton-bar skeleton-subtitle"></div>
+  </div>
+</div>
+
 <div id="lockScreen" class="lock hidden">
   <div class="lock-box">
     <div class="lock-logo">🔒</div>
@@ -675,7 +744,7 @@
   </div>
 </div>
 
-<div id="toast" class="toast hidden"></div>
+<div id="toastContainer" class="toast-container"></div>
 
 <script>
 'use strict';
@@ -690,11 +759,18 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
 }[c]));
 
 function toast(msg, isError = false) {
-  const el = $('#toast');
-  el.textContent = msg;
+  const container = $('#toastContainer');
+  if (!container) return;
+  const el = document.createElement('div');
   el.className = 'toast' + (isError ? ' error' : '');
-  clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.add('hidden'), 3500);
+  el.textContent = msg;
+  container.appendChild(el);
+  // 最多同时显示 5 条，超出移除最旧的
+  while (container.children.length > 5) container.firstChild.remove();
+  setTimeout(() => {
+    el.classList.add('hiding');
+    setTimeout(() => el.remove(), 250);
+  }, 3500);
 }
 
 async function api(path, opts = {}) {
@@ -957,7 +1033,7 @@ function renderMessages(history) {
       summary.className = 'tool-summary';
       summary.innerHTML = '<span>🛠️ ' + esc(summaryText) + '</span><span class="tool-toggle">点击展开详情</span>';
       const detail = document.createElement('div');
-      detail.className = 'tool-detail hidden';
+      detail.className = 'tool-detail';
       if (detailText) {
         const pre = document.createElement('pre');
         pre.className = 'tool-pre';
@@ -966,7 +1042,6 @@ function renderMessages(history) {
       }
       summary.addEventListener('click', () => {
         const open = div.classList.toggle('open');
-        detail.classList.toggle('hidden', !open);
         summary.querySelector('.tool-toggle').textContent = open ? '点击收起' : '点击展开详情';
         if (open) scrollBottom();
       });
@@ -1728,6 +1803,17 @@ $('#btnImportProject').addEventListener('click', async () => {
     toast('✅ 已关联 Worker：' + workerName);
   } catch (e) { toast(e.message, true); }
 });
+/* 设置页 Tab 切换 */
+document.querySelectorAll('.settings-tabs .stab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.settings-tabs .stab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    const panel = document.querySelector(`.settings-panel[data-panel="${btn.dataset.stab}"]`);
+    if (panel) panel.classList.add('active');
+  });
+});
+
 $('#btnSettings').addEventListener('click', openSettings);
 $('#setExecutor').addEventListener('change', syncExecutorBlocks);
 $('#btnCreateProject').addEventListener('click', createProject);
@@ -1991,12 +2077,16 @@ async function initApp() {
   applySidebarState();
   try {
     const r = await api('/api/auth/check');
+    const sk = document.getElementById('skeletonScreen');
+    if (sk) sk.remove();
     if (r.authed) {
       await initApp();
     } else {
       showLockScreen();
     }
   } catch (err) {
+    const sk = document.getElementById('skeletonScreen');
+    if (sk) sk.remove();
     showLockScreen();
   }
 })();
